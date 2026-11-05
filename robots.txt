@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://pwlae.github.io/commute-agents/sitemap.xml

@@ -1,0 +1,47 @@
+<p class="lead">This course is for engineers who build real products and want AI agents to do far more of the work. One lesson fits one commute: about 10 minutes of reading, then a few quick questions.</p>
+
+<h3>The idea</h3>
+<p>Most teams use agents like a faster keyboard. The agent writes code that looks hand-written, and a person reviews every line as if a colleague wrote it. Writing got 10 times faster. Reviewing didn't. So the whole team gets maybe 2–3 times faster, not 10.</p>
+<p>The fix is not a better prompt. It is moving the checks a reviewer does <b>before</b> the pull request, into things a machine can run: tests, lint rules, contract checks, an agent that reviews its own work. Then people review the rules, not every diff.</p>
+<p>You don't need to be on an "AI team" to build this. You know your product, your services and your team's unwritten rules. That is exactly the knowledge an agent is missing. The course goes in four parts:</p>
+
+<pre class="mermaid" data-alt="The four parts of the course. Part 1: level up, how models and agents really work. Part 2: your workbench, a local setup you are proud of. Part 3: the loop on a real distributed system. Part 4: share it with your team and company.">
+flowchart TD
+  A["Part 1: Level up<br/>how models and agents work"] --> B["Part 2: Your workbench<br/>a local setup you trust"]
+  B --> C["Part 3: The loop<br/>on a real distributed system"]
+  C --> D["Part 4: Team and company<br/>prove it, then share it"]
+</pre>
+
+<p>Part 1 needs only your phone. Parts 2 and 3 have a short hands-on step for when you are at a laptop. Part 3 uses a practice system with several services, Kafka, a saga and real database migrations, because agents find distributed systems much harder than a one-page website, and that is where most of us work.</p>
+
+<h3>How each lesson works</h3>
+<ol>
+  <li><b>Read the idea.</b> Short, plain words, one picture.</li>
+  <li><b>Answer the Predict cards.</b> Each one is a small situation from work. Guess first, then tap <b>Show answer</b>. If you were right, tick <b>I got it</b>.</li>
+  <li><b>Use it at work.</b> What to do differently tomorrow, and what to say if a colleague asks.</li>
+</ol>
+<p>Don't spend more than two minutes on a card. A wrong guess you then read about teaches you more than a long think.</p>
+
+<h3>Your turn</h3>
+<predict id="where-is-the-bottleneck" minutes="2">
+  <q><p>An agent writes a pull request in 10 minutes. A colleague then spends 50 minutes reviewing it line by line and asks for three changes. Which step should you speed up first?</p></q>
+  <answer><p><b>The review.</b> It is five times longer than the writing. Speeding up the agent further barely changes the total. The big gain comes from catching those three problems before the PR: if a test or a lint rule had flagged them, the agent would have fixed them itself, and the human would only check what a machine can't.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Next time you or a colleague opens an agent-written PR, write down two numbers: minutes spent writing and minutes spent reviewing.</li>
+  <li>Pick one review comment from that PR that a machine could have caught. Keep it. In Part 2 you will turn comments like that into checks.</li>
+</ul>
+<p><b>If someone asks</b> "why aren't we 10x faster with AI?": "Writing code got much faster, but we still review it the old way, line by line. Until the checks move before the PR, review is the bottleneck."</p>
+</atwork>
+
+<fact title="Amdahl's law">
+<p>In 1967 the computer architect Gene Amdahl pointed out that speeding up one part of a job can only help as much as that part's share of the whole. Make one part infinitely fast, and the time for the other parts is still there. He was talking about parallel processors, but it applies to teams too. If writing code is 30% of the time from ticket to production, then even instant code makes delivery at most about 1.4 times faster (1 ÷ 0.7). To go further, you have to speed up the rest: review, testing, deployment.</p>
+</fact>
+
+<recap><ul>
+  <li>Agents made writing fast. Line-by-line review is now the bottleneck.</li>
+  <li>The way out: move review checks before the PR, into things a machine runs.</li>
+  <li>Each lesson: read, answer the Predict cards, then use it at work.</li>
+</ul></recap>

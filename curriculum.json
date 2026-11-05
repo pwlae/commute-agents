@@ -1,0 +1,68 @@
+{
+  "title": "Commute Agents",
+  "short_name": "Commute Agents",
+  "tagline": "Agentic engineering for product engineers, one commute at a time. Understand how AI agents really work, then build a setup that ships real software.",
+  "short_tagline": "Agentic engineering, one commute at a time.",
+  "url": "https://pwlae.github.io/commute-agents/",
+  "repo": "https://github.com/pwlae/commute-agents",
+  "stages": [
+    {"id": "start", "title": "Start here"},
+    {"id": "model", "title": "Part 1 · The model"},
+    {"id": "harness", "title": "Part 1 · The harness"},
+    {"id": "models", "title": "Part 1 · Models and safety"},
+    {"id": "workbench", "title": "Part 2 · Your workbench"},
+    {"id": "system", "title": "Part 3 · A real system"},
+    {"id": "loop", "title": "Part 3 · The loop"},
+    {"id": "team", "title": "Part 4 · Your company"}
+  ],
+  "lessons": [
+    {"id": "how-to-use", "title": "How this course works", "stage": "start", "requires": []},
+
+    {"id": "tokens", "title": "Tokens and the context window", "stage": "model", "requires": ["how-to-use"]},
+    {"id": "sampling", "title": "How the next token is chosen", "stage": "model", "requires": ["tokens"]},
+    {"id": "prefill-decode", "title": "Reading fast, writing slow", "stage": "model", "requires": ["tokens"]},
+    {"id": "prompt-caching", "title": "Prompt caching", "stage": "model", "requires": ["tokens", "prefill-decode"]},
+    {"id": "thinking-effort", "title": "Thinking and effort levels", "stage": "model", "requires": ["prefill-decode"]},
+
+    {"id": "agent-loop", "title": "An agent is a while loop", "stage": "harness", "requires": ["tokens"]},
+    {"id": "tool-calls", "title": "Tool calls up close", "stage": "harness", "requires": ["agent-loop"]},
+    {"id": "context-management", "title": "Why long sessions get worse", "stage": "harness", "requires": ["agent-loop", "prompt-caching"]},
+    {"id": "memory", "title": "Agent memory is just files", "stage": "harness", "requires": ["context-management"]},
+    {"id": "skills-mcp", "title": "Skills, MCP and plugins up close", "stage": "harness", "requires": ["tool-calls", "memory"]},
+    {"id": "hooks-permissions", "title": "Hooks and permissions: rules that always run", "stage": "harness", "requires": ["tool-calls"]},
+    {"id": "subagents", "title": "Subagents and orchestration", "stage": "harness", "requires": ["context-management", "hooks-permissions"]},
+    {"id": "headless", "title": "Running agents without you", "stage": "harness", "requires": ["subagents"]},
+
+    {"id": "open-weights", "title": "Frontier vs open-weight models", "stage": "models", "requires": ["tokens"]},
+    {"id": "local-gpu", "title": "Running a model on your own GPU", "stage": "models", "requires": ["open-weights", "prefill-decode"]},
+    {"id": "inference-economics", "title": "Why an API is usually cheaper", "stage": "models", "requires": ["local-gpu"]},
+    {"id": "evals", "title": "Evals: better or just different?", "stage": "models", "requires": ["sampling"]},
+    {"id": "prompt-injection", "title": "Prompt injection and the lethal trifecta", "stage": "models", "requires": ["tool-calls"]},
+
+    {"id": "task-workspace", "title": "One folder per task", "stage": "workbench", "requires": ["headless"]},
+    {"id": "scripts-first", "title": "Script first, one small agent step", "stage": "workbench", "requires": ["task-workspace"]},
+    {"id": "context-files", "title": "Context files that earn their tokens", "stage": "workbench", "requires": ["memory"]},
+    {"id": "unwritten-rules", "title": "Turn unwritten rules into checks", "stage": "workbench", "requires": ["context-files", "hooks-permissions"]},
+    {"id": "verify-loop", "title": "Make the agent prove it works", "stage": "workbench", "requires": ["unwritten-rules"]},
+    {"id": "review-before-git", "title": "Review before git", "stage": "workbench", "requires": ["verify-loop", "subagents"]},
+    {"id": "measure-yourself", "title": "Measure your own loop", "stage": "workbench", "requires": ["review-before-git", "evals"]},
+
+    {"id": "reference-system", "title": "Tour of the practice system", "stage": "system", "requires": ["measure-yourself"]},
+    {"id": "contracts", "title": "Contracts between services", "stage": "system", "requires": ["reference-system"]},
+    {"id": "migrations", "title": "Database migrations agents can't break", "stage": "system", "requires": ["reference-system"]},
+    {"id": "sagas", "title": "Sagas, retries and idempotency", "stage": "system", "requires": ["contracts"]},
+    {"id": "observability", "title": "Logs and metrics an agent can read", "stage": "system", "requires": ["reference-system"]},
+
+    {"id": "ticket-to-pr", "title": "From ticket to pull request", "stage": "loop", "requires": ["sagas", "migrations"]},
+    {"id": "many-repos", "title": "One change, many repositories", "stage": "loop", "requires": ["ticket-to-pr"]},
+    {"id": "on-call-loop", "title": "Alert, triage, fix", "stage": "loop", "requires": ["observability", "ticket-to-pr"]},
+    {"id": "risk-tiers", "title": "Risk tiers and auto-merge", "stage": "loop", "requires": ["many-repos", "prompt-injection"]},
+    {"id": "self-healing", "title": "The self-healing loop, end to end", "stage": "loop", "requires": ["on-call-loop", "risk-tiers"]},
+
+    {"id": "share-with-team", "title": "From your laptop to your team", "stage": "team", "requires": ["self-healing"]},
+    {"id": "prove-it", "title": "Prove it with numbers", "stage": "team", "requires": ["share-with-team"]},
+    {"id": "regulated", "title": "Agents in a regulated company", "stage": "team", "requires": ["risk-tiers"]},
+    {"id": "agent-postmortems", "title": "Post-mortems for agent mistakes", "stage": "team", "requires": ["share-with-team"]},
+    {"id": "company-setup", "title": "One setup for the whole company", "stage": "team", "requires": ["prove-it", "regulated"]}
+  ]
+}

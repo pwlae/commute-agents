@@ -1,0 +1,120 @@
+<p class="lead">Every time an agent takes a step, it sends the whole conversation to the model again. Prompt caching lets the provider reuse the work it already did on the unchanged start of that conversation, which makes long agent sessions several times cheaper and faster.</p>
+
+<h3>The idea</h3>
+<p>Picture a book club with a strange rule: before each meeting you must re-read the book from page one, then read the new chapter. That gets slow by chapter 20. So you keep notes on everything you've already read, and only read the new chapter properly.</p>
+<p>There is a catch. If someone changes a sentence on page 3, your notes from page 3 onwards are useless, because everything after it might read differently now. You keep only the notes up to the first change.</p>
+<p>A model API works like that book club:</p>
+<ol>
+  <li><b>The API remembers nothing between requests.</b> Each request sends everything: the tool list, the system prompt (the instructions at the start), and every message so far. Step 40 of an agent session sends steps 1–39 again.</li>
+  <li><b>Reading the prompt is real work.</b> For every token, the model computes internal data it needs to write the answer (the "KV cache", explained in <a href="#prefill-decode">Reading fast, writing slow</a>).</li>
+  <li><b>The provider can keep that data for a few minutes.</b> If your next request starts with exactly the same bytes, it reuses the saved work up to the first byte that differs. That is a <b>prefix match</b>: only the unchanged start counts.</li>
+</ol>
+
+<pre class="mermaid" data-alt="One request at step 40 of an agent session, top to bottom: the tools, the system prompt and messages 1 to 39 are the same as last time, so they are read from the cache at a low price. Only the new message 40 is read at full price.">
+flowchart TD
+  A["Tools<br/>same as before: from cache"] --> B["System prompt<br/>same as before: from cache"]
+  B --> C["Messages 1–39<br/>same as before: from cache"]
+  C --> D["New message 40<br/>read at full price"]
+  style D stroke-width:3px
+</pre>
+
+<p>The order matters: <b>tools first, then the system prompt, then messages</b>. A change near the top throws away everything below it. A new message at the bottom throws away nothing. That is the normal, cheap case.</p>
+
+<h3>Up close</h3>
+<p>Here is a request with caching on, using Anthropic's Python SDK. The <code>usage</code> fields tell you what happened:</p>
+<pre><code class="language-python">resp = client.messages.create(
+    model=MODEL,
+    max_tokens=2000,
+    # cache everything up to the
+    # last block, moving each turn
+    cache_control={
+        "type": "ephemeral"
+    },
+    system=SYSTEM_PROMPT,
+    messages=history,
+)
+u = resp.usage
+# saved to the cache this time
+print(u.cache_creation_input_tokens)
+# reused from the cache
+print(u.cache_read_input_tokens)
+# read at full price
+print(u.input_tokens)
+</code></pre>
+<p>On Anthropic's API (other providers differ in the details):</p>
+<ul>
+  <li><b>Reading from the cache</b> costs about a tenth of the normal input price, and even less on some newer models.</li>
+  <li><b>Writing to the cache</b> costs a bit more than normal: 1.25 times for the default 5-minute lifetime, 2 times for a 1-hour lifetime. Every cache read resets the timer.</li>
+  <li><b>Short prompts aren't cached.</b> Below a minimum length (512 to 4,096 tokens, depending on the model) nothing is saved, and there is no error. You just see <code>cache_read_input_tokens</code> stay at 0.</li>
+</ul>
+<p>Other providers cache too, some fully automatically, and open-source model servers do the same thing (often called "prefix caching"). The prefix rule is the same everywhere, because it comes from how models read text.</p>
+
+<h3>What breaks the cache</h3>
+<table>
+  <tr><th>Change</th><th>What must be re-read</th></tr>
+  <tr><td>New message at the end</td><td>Only the new message</td></tr>
+  <tr><td>Timestamp in the system prompt</td><td>System prompt and all messages</td></tr>
+  <tr><td>Tool added, removed or reordered</td><td>Everything</td></tr>
+  <tr><td>Switch to another model</td><td>Everything (each model has its own cache)</td></tr>
+  <tr><td>Edit an old message</td><td>That message and all after it</td></tr>
+  <tr><td>Pause longer than the lifetime</td><td>Everything</td></tr>
+</table>
+<p>Watch for invisible changes too: JSON with keys in a random order, or a request ID in the prompt. The text means the same, but the bytes differ.</p>
+
+<h3>Worked example</h3>
+<p>One step of an agent session sends 100,000 tokens. 97,500 of them are the same as the previous step, and 2,500 are new (the last tool result and the reply). Count cost in "full-price tokens":</p>
+<table>
+  <tr><th></th><th>Without cache</th><th>With cache</th></tr>
+  <tr><td>97,500 old tokens</td><td>97,500</td><td>× 0.1 = 9,750</td></tr>
+  <tr><td>2,500 new tokens</td><td>2,500</td><td>× 1.25 = 3,125</td></tr>
+  <tr><td><b>Total</b></td><td><b>100,000</b></td><td><b>12,875</b></td></tr>
+</table>
+<p>About <b>8 times cheaper</b> per step, and the reply starts sooner, because the model skips re-reading. Over a 40-step session, that is the difference between a tool your company can afford and one it can't.</p>
+
+<h3>Your turn</h3>
+<predict id="cache-timestamp" minutes="2">
+  <q><p>You add <code>Current time: 14:32:07</code> to the top of your agent's system prompt, so it always knows the time. What happens to the cost of each step?</p></q>
+  <answer><p><b>It goes up a lot.</b> The time changes on every request, and it sits near the very start of the prompt. So every step misses the cache for the system prompt and the whole conversation, and pays full price for all of it. Put the time in the newest message instead, or leave it out.</p></answer>
+</predict>
+
+<predict id="cache-tool-toggle" minutes="2">
+  <q><p>To save tokens, your harness adds the database tool only when the task mentions SQL, and removes it otherwise. Good idea?</p></q>
+  <answer><p><b>Usually not.</b> Tools come first in the prompt. Each time the list changes, everything after it, including the whole conversation, must be re-read at full price. A fixed tool list that is cached is cheaper than a short list that keeps changing.</p></answer>
+</predict>
+
+<predict id="cache-coffee-break" minutes="2">
+  <q><p>You leave a long agent session for 15 minutes to get coffee, then type "continue". The first reply is slow and costs more than usual. The next ones are fast again. Why?</p></q>
+  <answer><p><b>The cache expired.</b> The default lifetime is 5 minutes, and nothing used the cache while you were away. The first request re-read the whole conversation at full price and saved it again. The ones after that hit the new cache. A 1-hour lifetime avoids this, at a higher price for writing.</p></answer>
+</predict>
+
+<predict id="cache-model-switch" minutes="3">
+  <q><p>To save money, you switch a long session from the big model to a small one for "easy" steps, then switch back. The bill goes up instead of down. Why?</p></q>
+  <answer><p><b>Each model has its own cache.</b> Every switch means the other model reads the whole conversation at full price. That can cost more than the cheaper model saves. A better way: give the easy job to a separate helper agent (a subagent) with its own short context, and keep the main session on one model.</p></answer>
+</predict>
+
+<predict id="cache-trim-old" minutes="3">
+  <q><p>Stretch: your harness shortens long tool outputs from 30 steps ago, a little on every step, to keep the context small. Why can this cost more than doing nothing?</p></q>
+  <hint>Where in the prompt is the edit, and what comes after it?</hint>
+  <answer><p><b>Each edit sits in the middle of the conversation</b>, so everything after it is re-read at full price on every step. You save some tokens but lose the cache for most of the conversation. If you must shrink the context, do it rarely and all at once, then let the cache build up again. That is how "compaction" (summarising the conversation) is designed to work.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>If your team calls an LLM API, log <code>cache_read_input_tokens</code> (or your provider's version of it). If it stays at 0 across similar calls, look for something that changes at the start: a date, a user name, a request ID, unsorted JSON.</li>
+  <li>Move anything that changes per request to the end of the prompt. Keep the system prompt and tool list frozen.</li>
+  <li>In your coding agent, don't keep switching models or turning tools on and off in one long session. Start a fresh session instead.</li>
+</ul>
+<p><b>If someone asks</b> "why is our LLM bill so high?": "Check the cache hit rate first. Every agent step sends the whole conversation again, so if something at the start changes every time, we pay full price for the entire history on every step."</p>
+</atwork>
+
+<fact title="A cache built like an operating system">
+<p>In 2023, researchers at UC Berkeley released vLLM, an open-source server for running language models. Its key idea, PagedAttention, borrows a trick from operating systems: instead of keeping each request's KV cache in one large block of GPU memory, it splits it into small fixed-size pages, like virtual memory. Their paper reported 2–4 times higher throughput than the best systems of the time. The same pages made prefix caching cheap: vLLM identifies each page by a hash of its tokens and all the tokens before it, so two requests that start the same way simply share pages.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Anthropic API docs; vLLM paper and docs).</p>
+
+<recap><ul>
+  <li>Every agent step sends everything again. Caching reuses the unchanged start.</li>
+  <li>Order: tools → system prompt → messages. A change anywhere loses everything after it.</li>
+  <li>Keep the start frozen: no timestamps, fixed tools, one model per session. Watch the cache-read numbers.</li>
+</ul></recap>
