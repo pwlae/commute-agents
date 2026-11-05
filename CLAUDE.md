@@ -131,12 +131,14 @@ Sections, in this order (`<h3>`):
    Mermaid diagram.
 3. **Up close**: the mechanism, with a small code or config example where it helps.
 4. **Worked example**: optional, a small table works well.
-5. **Your turn**: 3–6 `<predict>` cards, easiest first. Each one is a realistic
+5. **At your laptop** (Parts 2–3 only, optional): one short hands-on step for when the
+   reader is at a computer. Everything above it must still make sense on a phone.
+6. **Your turn**: 3–6 `<predict>` cards, easiest first. Each one is a realistic
    situation from work with a clear, short answer that explains *why*.
-6. `<atwork>`: 2–4 things to do differently tomorrow, then "If someone asks…" with a
+7. `<atwork>`: 2–4 things to do differently tomorrow, then "If someone asks…" with a
    two-sentence answer the reader can say out loud.
-7. `<fact title="...">`: a true, well-documented real-world story.
-8. `<p class="checked">` (when there are product details), then `<recap>`: 3 bullets.
+8. `<fact title="...">`: a true, well-documented real-world story.
+9. `<p class="checked">` (when there are product details), then `<recap>`: 3 bullets.
 
 Markup (build.py expands it):
 
@@ -155,3 +157,23 @@ Markup (build.py expands it):
 
 Predict ids must be unique across the whole course (the build fails otherwise).
 `lessons/prompt-caching.html` is the model lesson.
+
+## Loop workflow (Linear, parallel)
+
+Work is tracked in Linear: workspace **pwlae-personal-blog**, team **PWL**, project
+**commute-agents**. One issue per lesson, titled `Lesson: <title> [<id>]`, plus setup
+issues (e.g. the Part 3 practice system). The issue descriptions come from
+`plan/lessons.md`. Blockers follow each lesson's `requires` in `curriculum.json`, so
+lessons with no unwritten prerequisites can be written in parallel.
+
+- `/linear-setup` creates the project and issues once (`.claude/commands/linear-setup.md`).
+- `/loop /lesson-loop` runs the loop (`.claude/commands/lesson-loop.md`). The owner
+  approved subagents, git worktrees, and merging to `master` without review.
+- **Orchestrator** (main session, on `master`): picks up to 4 ready issues, starts one
+  subagent per issue in its own worktree, merges them one at a time, rebuilds, pushes,
+  comments on the issue and moves it to Done. Only the orchestrator pushes or touches
+  Linear.
+- **Subagent**: writes `lessons/<id>.html`, checks every fact against a primary source,
+  passes the build and width check, looks at the phone screenshot and print PDF, and
+  commits only the lesson file and new diagrams.
+- Site problems go into new issues in the same project, never into lesson commits.
