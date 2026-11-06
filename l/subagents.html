@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -177,7 +183,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 
 <h3>Up close</h3>
 <p>In Claude Code a subagent is a Markdown file in <code>.claude/agents/</code> (commit it, and your team gets it) or <code>~/.claude/agents/</code>. Only <code>name</code> and <code>description</code> are required:</p>
-<pre class="code" data-lang="markdown"><code>---
+<pre class="code long" data-lang="markdown"><code>---
 name: diff-reviewer
 description: Reviews the current
   diff for bugs. Use after code

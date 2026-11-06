@@ -139,6 +139,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -148,7 +152,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -211,7 +217,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <figure class="diagram"><a href="diagrams/889558bd5db8.svg" target="_blank" rel="noopener" title="Open full size"><img src="diagrams/889558bd5db8.svg" alt="What fills the context window in one agent request, top to bottom: tool definitions, the system prompt and context files, all messages and tool results so far, and the reply being written. All of it must fit in the window." width="190" height="517" loading="lazy" decoding="async"></a></figure>
 
 <p><b>Counting tokens with the API.</b> Anthropic has a free endpoint that counts the input tokens of a request without running it. It takes the same fields as a normal request. The answer is an estimate, but a close one:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">anthropic</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">anthropic</span>
 
 <span class="n">client</span> <span class="o">=</span> <span class="n">anthropic</span><span class="o">.</span><span class="n">Anthropic</span><span class="p">()</span>
 <span class="n">path</span> <span class="o">=</span> <span class="s2">&quot;orders/service.py&quot;</span>
@@ -291,7 +297,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   <li><b>Top-p</b> (also called <b>nucleus sampling</b>) drops the long tail. It keeps the smallest group of top tokens whose probabilities add up to p, say 0.9, and throws the rest away. The model's vocabulary has tens of thousands of tokens, and most of them are nonsense in any given spot. Top-p, introduced in a 2019 paper by Ari Holtzman and colleagues, makes sure none of that nonsense can win the roll.</li>
 </ul>
 <p>Some APIs also have <b>top-k</b>: keep only the k most likely tokens. Here is the whole sampler in a few lines of Python:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">t</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">top_p</span><span class="o">=</span><span class="mf">1.0</span><span class="p">):</span>
@@ -378,7 +384,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <p><b>Why writing is slow.</b> Google's researchers put the bottleneck plainly: GPUs and TPUs can do hundreds of trillions of operations per second, but can move only trillions of bytes per second from memory, about a hundred times less. Writing one token does only a few operations per byte of weights read, so the chip spends most of its time waiting for memory. NVIDIA describes prefill as "highly parallelized" work that "saturates" the GPU, and decode as work that leaves it underused.</p>
 <p><b>The KV cache in plain words.</b> For each token, at each layer of the model, the model computes a "key" (what this token is about, for others to search) and a "value" (what it has to offer when found). Every new token looks up the keys and values of all the tokens before it. Keeping them in GPU memory means each new token only computes its own. The cache is big: NVIDIA's example, a small 7-billion-parameter model with 4,096 tokens of context, needs about 2 GB of KV cache for one request. This cache is exactly what <a href="#prompt-caching">prompt caching</a> saves between requests.</p>
 <p><b>Two numbers for speed.</b> <b>Time to first token</b> (TTFT) is how long you wait before the reply starts: mostly prefill, plus any time in a queue. <b>Output tokens per second</b> is the decode speed. Total time is roughly TTFT plus output tokens divided by that speed. You can measure both with streaming:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 
 <span class="n">t0</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
 <span class="n">first</span> <span class="o">=</span> <span class="kc">None</span>
@@ -455,7 +461,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 
 <h3>Up close</h3>
 <p>Here is a request with caching on, using Anthropic's Python SDK. The <code>usage</code> fields tell you what happened:</p>
-<pre class="code" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+<pre class="code long" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
     <span class="n">model</span><span class="o">=</span><span class="n">MODEL</span><span class="p">,</span>
     <span class="n">max_tokens</span><span class="o">=</span><span class="mi">2000</span><span class="p">,</span>
     <span class="c1"># cache everything up to the</span>
@@ -548,7 +554,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 
 <h3>Up close</h3>
 <p>On Anthropic's API, effort is one field. Newer models think adaptively, and on some, such as Claude Opus 5.5, thinking can't be turned off, so effort is the main control:</p>
-<pre class="code" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+<pre class="code long" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
     <span class="n">model</span><span class="o">=</span><span class="n">MODEL</span><span class="p">,</span>
     <span class="n">max_tokens</span><span class="o">=</span><span class="mi">32000</span><span class="p">,</span>
     <span class="n">output_config</span><span class="o">=</span><span class="p">{</span>
@@ -646,7 +652,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 
 <h3>Up close</h3>
 <p>Here is a complete, working agent with one tool, a shell, using Anthropic's Python SDK. First the tool description the model will see:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">subprocess</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">anthropic</span>
 
 <span class="n">client</span> <span class="o">=</span> <span class="n">anthropic</span><span class="o">.</span><span class="n">Anthropic</span><span class="p">()</span>
@@ -670,7 +676,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
         <span class="n">capture_output</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">p</span><span class="o">.</span><span class="n">stdout</span> <span class="o">+</span> <span class="n">p</span><span class="o">.</span><span class="n">stderr</span></code></pre>
 <p>And the agent itself, the whole loop:</p>
-<pre class="code" data-lang="python"><code><span class="n">msgs</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span>
+<pre class="code long" data-lang="python"><code><span class="n">msgs</span> <span class="o">=</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span>
          <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="n">TASK</span><span class="p">}]</span>
 <span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
     <span class="n">r</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
@@ -761,7 +767,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 
 <h3>Up close</h3>
 <p>Here is the harness step done properly. Every failure becomes a result the model can read, and the output is trimmed before it enters the context:</p>
-<pre class="code" data-lang="python"><code><span class="kn">from</span><span class="w"> </span><span class="nn">jsonschema</span><span class="w"> </span><span class="kn">import</span> <span class="n">validate</span>
+<pre class="code long" data-lang="python"><code><span class="kn">from</span><span class="w"> </span><span class="nn">jsonschema</span><span class="w"> </span><span class="kn">import</span> <span class="n">validate</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">handle</span><span class="p">(</span><span class="n">b</span><span class="p">):</span>  <span class="c1"># one tool_use block</span>
     <span class="k">def</span><span class="w"> </span><span class="nf">res</span><span class="p">(</span><span class="n">text</span><span class="p">,</span> <span class="n">err</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
@@ -868,7 +874,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   <tr><td><b>Fresh session</b></td><td>The whole conversation. Only files on disk remain: code, context files, your notes.</td></tr>
 </table>
 <p>Anthropic's API offers the first two as request options, so you don't write the summariser yourself. Here is compaction (in beta, November 2026) on a request in the agent loop:</p>
-<pre class="code" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">beta</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
+<pre class="code long" data-lang="python"><code><span class="n">resp</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="n">beta</span><span class="o">.</span><span class="n">messages</span><span class="o">.</span><span class="n">create</span><span class="p">(</span>
     <span class="n">betas</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;compact-2026-01-12&quot;</span><span class="p">],</span>
     <span class="n">model</span><span class="o">=</span><span class="n">MODEL</span><span class="p">,</span>
     <span class="n">max_tokens</span><span class="o">=</span><span class="mi">16000</span><span class="p">,</span>
@@ -1045,7 +1051,7 @@ paths:
 
 <h3>Up close: skills</h3>
 <p>A skill is a folder with a <code>SKILL.md</code> file. The top of the file, between the <code>---</code> lines, is the frontmatter. Only that part is always loaded:</p>
-<pre class="code" data-lang="markdown"><code>---
+<pre class="code long" data-lang="markdown"><code>---
 name: payments-client
 description: &gt;-
   How to call payment providers from
@@ -1163,7 +1169,7 @@ Error codes: see reference.md.</code></pre>
 <span class="p">}</span></code></pre>
 <p>Rules are checked in a fixed order: <b>deny, then ask, then allow</b>, and the first match wins. A deny always beats an allow, however specific the allow is. Your organisation can also push managed settings that no project or user file can override.</p>
 <p><b>Hooks</b> handle what a pattern can't express. Say your team's rule is "never edit a migration that's already committed; write a new one". A folder pattern can't tell old files from new ones, but a ten-line script can:</p>
-<pre class="code" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
+<pre class="code long" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
 <span class="c1"># hooks/mig.sh: runs before each edit</span>
 <span class="nv">f</span><span class="o">=</span><span class="k">$(</span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.tool_input.file_path&#39;</span><span class="k">)</span>
 <span class="k">case</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$f</span><span class="s2">&quot;</span><span class="w"> </span><span class="k">in</span>
@@ -1263,7 +1269,7 @@ ruff<span class="w"> </span>check<span class="w"> </span><span class="s2">&quot;
 
 <h3>Up close</h3>
 <p>In Claude Code a subagent is a Markdown file in <code>.claude/agents/</code> (commit it, and your team gets it) or <code>~/.claude/agents/</code>. Only <code>name</code> and <code>description</code> are required:</p>
-<pre class="code" data-lang="markdown"><code>---
+<pre class="code long" data-lang="markdown"><code>---
 name: diff-reviewer
 description: Reviews the current
   diff for bugs. Use after code
@@ -1352,7 +1358,7 @@ file:line. Don&#39;t fix anything.</code></pre>
 
 <h3>Up close</h3>
 <p>In Claude Code, the switch is <code>-p</code> (print mode): it runs the task, prints the result and exits, with code 0 on success and non-zero on failure. Here is a nightly job as a plain script:</p>
-<pre class="code" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
+<pre class="code long" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
 <span class="c1"># nightly-deps.sh: one fixed task</span>
 <span class="nv">b</span><span class="o">=</span><span class="s2">&quot;deps-</span><span class="k">$(</span>date<span class="w"> </span>+%F<span class="k">)</span><span class="s2">&quot;</span>
 git<span class="w"> </span>worktree<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;../</span><span class="nv">$b</span><span class="s2">&quot;</span><span class="w"> </span>-b<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$b</span><span class="s2">&quot;</span>
@@ -1545,7 +1551,7 @@ vllm<span class="w"> </span>serve<span class="w"> </span>openai/gpt-oss-20b<span
   <tr><td>4-bit (Q4_K_M)</td><td>~0.61</td><td>~20 GB</td></tr>
 </table>
 <p><b>The KV cache.</b> For every token, every layer stores a key and a value for each KV head. Its model config gives the numbers: 64 layers, 8 KV heads, head size 128. In 16-bit:</p>
-<pre class="code" data-lang="python"><code><span class="c1"># bytes of KV cache per token</span>
+<pre class="code long" data-lang="python"><code><span class="c1"># bytes of KV cache per token</span>
 <span class="n">layers</span> <span class="o">=</span> <span class="mi">64</span>
 <span class="n">kv_heads</span> <span class="o">=</span> <span class="mi">8</span>
 <span class="n">head_dim</span> <span class="o">=</span> <span class="mi">128</span>
@@ -1621,7 +1627,7 @@ vllm<span class="w"> </span>serve<span class="w"> </span>openai/gpt-oss-20b<span
 <p><b>Batching, measured.</b> Databricks tested a 7-billion-parameter model on one A100 GPU. Going from 1 request at a time to a batch of 64 raised throughput 14 times, while each request took 4 times longer. Total output goes up a lot; each user's stream gets somewhat slower. Batches can't grow forever: every request needs its own KV cache in GPU memory, and past a point the chip runs out of room or of compute.</p>
 <p><b>Continuous batching.</b> Requests finish at different times. Modern servers (vLLM, Hugging Face TGI, NVIDIA TensorRT-LLM) add and remove requests at every decode step, so a finished slot is refilled straight away instead of waiting for the whole batch. The story behind it is the fact below.</p>
 <p><b>The break-even sum.</b> The fair comparison is the same model on both sides. OpenAI's open-weight gpt-oss-120b fits on one 80 GB H100 GPU, and many hosts sell it by the token. Fireworks lists it at $0.15 per million input tokens, $0.015 for cached input and $0.60 for output. Together AI rents an H100 at $3.99 per GPU-hour. Providers don't publish their costs or margins, so these are just prices you can pay.</p>
-<pre class="code" data-lang="python"><code><span class="c1"># $ per 1M tokens (Fireworks)</span>
+<pre class="code long" data-lang="python"><code><span class="c1"># $ per 1M tokens (Fireworks)</span>
 <span class="n">CACHED</span><span class="p">,</span> <span class="n">NEW</span><span class="p">,</span> <span class="n">OUT</span> <span class="o">=</span> <span class="mf">0.015</span><span class="p">,</span> <span class="mf">0.15</span><span class="p">,</span> <span class="mf">0.60</span>
 
 <span class="c1"># ASSUMED agent step: 50k context,</span>
@@ -1697,7 +1703,7 @@ vllm<span class="w"> </span>serve<span class="w"> </span>openai/gpt-oss-20b<span
 
 <h3>Up close</h3>
 <p><b>The tasks.</b> The best tasks for a product engineer are your own past tickets: real work, in your real repos, with a known good answer, the merged fix. Check out the commit just before the fix, give the agent the ticket text, and grade with the tests that came with the fix. That is exactly how the public SWE-bench benchmark works. A task can be a small file:</p>
-<pre class="code" data-lang="yaml"><code><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">refund-rounding</span>
+<pre class="code long" data-lang="yaml"><code><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">refund-rounding</span>
 <span class="nt">repo</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">payments-service</span>
 <span class="c1"># the commit just before the fix</span>
 <span class="nt">base</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3f2a9c1</span>
@@ -1804,7 +1810,7 @@ vllm<span class="w"> </span>serve<span class="w"> </span>openai/gpt-oss-20b<span
   <li><b>Ask a human for risky actions only.</b> Approval works when it is rare enough to be read. Invariant noted that many users had set tool calls to "Always Allow", which quietly removes the human.</li>
 </ul>
 <p>Here is a sandbox that only reaches your package registry, with the fetch tool removed (it runs outside the sandbox, so it needs its own rule):</p>
-<pre class="code" data-lang="json"><code><span class="p">{</span>
+<pre class="code long" data-lang="json"><code><span class="p">{</span>
 <span class="w">  </span><span class="nt">&quot;sandbox&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nt">&quot;enabled&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
 <span class="w">    </span><span class="nt">&quot;network&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
@@ -1888,7 +1894,7 @@ vllm<span class="w"> </span>serve<span class="w"> </span>openai/gpt-oss-20b<span
   <tr><td>Anything you've corrected twice</td><td>"Write clean code", "be careful"</td></tr>
 </table>
 <p>Here is a context file for a service in a distributed system. It is about 35 lines, and nearly every line is something a new joiner gets wrong:</p>
-<pre class="code" data-lang="markdown"><code><span class="gh"># orders: order service (Go)</span>
+<pre class="code long" data-lang="markdown"><code><span class="gh"># orders: order service (Go)</span>
 
 <span class="gu">## Commands</span>
 <span class="k">-</span><span class="w"> </span>Start Postgres + Kafka: make deps

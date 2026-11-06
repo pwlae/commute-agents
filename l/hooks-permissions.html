@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -184,7 +190,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <span class="p">}</span></code></pre>
 <p>Rules are checked in a fixed order: <b>deny, then ask, then allow</b>, and the first match wins. A deny always beats an allow, however specific the allow is. Your organisation can also push managed settings that no project or user file can override.</p>
 <p><b>Hooks</b> handle what a pattern can't express. Say your team's rule is "never edit a migration that's already committed; write a new one". A folder pattern can't tell old files from new ones, but a ten-line script can:</p>
-<pre class="code" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
+<pre class="code long" data-lang="bash"><code><span class="ch">#!/bin/bash</span>
 <span class="c1"># hooks/mig.sh: runs before each edit</span>
 <span class="nv">f</span><span class="o">=</span><span class="k">$(</span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.tool_input.file_path&#39;</span><span class="k">)</span>
 <span class="k">case</span><span class="w"> </span><span class="s2">&quot;</span><span class="nv">$f</span><span class="s2">&quot;</span><span class="w"> </span><span class="k">in</span>

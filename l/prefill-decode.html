@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -172,7 +178,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <p><b>Why writing is slow.</b> Google's researchers put the bottleneck plainly: GPUs and TPUs can do hundreds of trillions of operations per second, but can move only trillions of bytes per second from memory, about a hundred times less. Writing one token does only a few operations per byte of weights read, so the chip spends most of its time waiting for memory. NVIDIA describes prefill as "highly parallelized" work that "saturates" the GPU, and decode as work that leaves it underused.</p>
 <p><b>The KV cache in plain words.</b> For each token, at each layer of the model, the model computes a "key" (what this token is about, for others to search) and a "value" (what it has to offer when found). Every new token looks up the keys and values of all the tokens before it. Keeping them in GPU memory means each new token only computes its own. The cache is big: NVIDIA's example, a small 7-billion-parameter model with 4,096 tokens of context, needs about 2 GB of KV cache for one request. This cache is exactly what <a href="prompt-caching.html">prompt caching</a> saves between requests.</p>
 <p><b>Two numbers for speed.</b> <b>Time to first token</b> (TTFT) is how long you wait before the reply starts: mostly prefill, plus any time in a queue. <b>Output tokens per second</b> is the decode speed. Total time is roughly TTFT plus output tokens divided by that speed. You can measure both with streaming:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">time</span>
 
 <span class="n">t0</span> <span class="o">=</span> <span class="n">time</span><span class="o">.</span><span class="n">monotonic</span><span class="p">()</span>
 <span class="n">first</span> <span class="o">=</span> <span class="kc">None</span>

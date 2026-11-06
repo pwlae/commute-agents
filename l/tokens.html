@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -175,7 +181,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <figure class="diagram"><a href="../diagrams/889558bd5db8.svg" target="_blank" rel="noopener" title="Open full size"><img src="../diagrams/889558bd5db8.svg" alt="What fills the context window in one agent request, top to bottom: tool definitions, the system prompt and context files, all messages and tool results so far, and the reply being written. All of it must fit in the window." width="190" height="517" loading="lazy" decoding="async"></a></figure>
 
 <p><b>Counting tokens with the API.</b> Anthropic has a free endpoint that counts the input tokens of a request without running it. It takes the same fields as a normal request. The answer is an estimate, but a close one:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">anthropic</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">anthropic</span>
 
 <span class="n">client</span> <span class="o">=</span> <span class="n">anthropic</span><span class="o">.</span><span class="n">Anthropic</span><span class="p">()</span>
 <span class="n">path</span> <span class="o">=</span> <span class="s2">&quot;orders/service.py&quot;</span>

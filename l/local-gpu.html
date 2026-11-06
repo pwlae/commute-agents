@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -176,7 +182,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   <tr><td>4-bit (Q4_K_M)</td><td>~0.61</td><td>~20 GB</td></tr>
 </table>
 <p><b>The KV cache.</b> For every token, every layer stores a key and a value for each KV head. Its model config gives the numbers: 64 layers, 8 KV heads, head size 128. In 16-bit:</p>
-<pre class="code" data-lang="python"><code><span class="c1"># bytes of KV cache per token</span>
+<pre class="code long" data-lang="python"><code><span class="c1"># bytes of KV cache per token</span>
 <span class="n">layers</span> <span class="o">=</span> <span class="mi">64</span>
 <span class="n">kv_heads</span> <span class="o">=</span> <span class="mi">8</span>
 <span class="n">head_dim</span> <span class="o">=</span> <span class="mi">128</span>

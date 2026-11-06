@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -170,7 +176,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <p><b>Batching, measured.</b> Databricks tested a 7-billion-parameter model on one A100 GPU. Going from 1 request at a time to a batch of 64 raised throughput 14 times, while each request took 4 times longer. Total output goes up a lot; each user's stream gets somewhat slower. Batches can't grow forever: every request needs its own KV cache in GPU memory, and past a point the chip runs out of room or of compute.</p>
 <p><b>Continuous batching.</b> Requests finish at different times. Modern servers (vLLM, Hugging Face TGI, NVIDIA TensorRT-LLM) add and remove requests at every decode step, so a finished slot is refilled straight away instead of waiting for the whole batch. The story behind it is the fact below.</p>
 <p><b>The break-even sum.</b> The fair comparison is the same model on both sides. OpenAI's open-weight gpt-oss-120b fits on one 80 GB H100 GPU, and many hosts sell it by the token. Fireworks lists it at $0.15 per million input tokens, $0.015 for cached input and $0.60 for output. Together AI rents an H100 at $3.99 per GPU-hour. Providers don't publish their costs or margins, so these are just prices you can pay.</p>
-<pre class="code" data-lang="python"><code><span class="c1"># $ per 1M tokens (Fireworks)</span>
+<pre class="code long" data-lang="python"><code><span class="c1"># $ per 1M tokens (Fireworks)</span>
 <span class="n">CACHED</span><span class="p">,</span> <span class="n">NEW</span><span class="p">,</span> <span class="n">OUT</span> <span class="o">=</span> <span class="mf">0.015</span><span class="p">,</span> <span class="mf">0.15</span><span class="p">,</span> <span class="mf">0.60</span>
 
 <span class="c1"># ASSUMED agent step: 50k context,</span>

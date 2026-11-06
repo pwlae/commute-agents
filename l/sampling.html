@@ -138,6 +138,10 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .lc-title{color:#000}
   pre.code{white-space:pre-wrap;border:1px solid #999;border-left-width:3px}
   pre.code,.lc,.diagram,.recap,.atwork,details,table{break-inside:avoid}
+  pre.code.long{break-inside:auto;overflow:visible;orphans:4;widows:4}
+  /* Collapsed borders stick out half a border past the box: leave room. */
+  table{display:table;width:calc(100% - 2px);margin-left:1px;overflow:visible;font-size:9.5pt}
+  th,td{padding:.25rem .4rem;overflow-wrap:break-word}
   h2,h3{break-after:avoid}
   details{border-color:#999}
   details>summary{list-style:none}
@@ -147,7 +151,9 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   .answers ul{list-style:none;padding:0}
   .answers li{margin-bottom:1rem}
   .answers li>b{display:block;break-after:avoid;page-break-after:avoid}
-  .diagram img{max-height:14cm;width:auto}
+  /* Natural size from the width/height attributes (never scaled up);
+     very tall ones shrink to fit, keeping their shape. */
+  .diagram img{max-height:14cm;object-fit:contain}
 }
 </style>
 </head>
@@ -176,7 +182,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   <li><b>Top-p</b> (also called <b>nucleus sampling</b>) drops the long tail. It keeps the smallest group of top tokens whose probabilities add up to p, say 0.9, and throws the rest away. The model's vocabulary has tens of thousands of tokens, and most of them are nonsense in any given spot. Top-p, introduced in a 2019 paper by Ari Holtzman and colleagues, makes sure none of that nonsense can win the roll.</li>
 </ul>
 <p>Some APIs also have <b>top-k</b>: keep only the k most likely tokens. Here is the whole sampler in a few lines of Python:</p>
-<pre class="code" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<pre class="code long" data-lang="python"><code><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span><span class="n">scores</span><span class="p">,</span> <span class="n">t</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">top_p</span><span class="o">=</span><span class="mf">1.0</span><span class="p">):</span>

@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parent
 LESSONS = ROOT / "lessons"
 DIAGRAMS = ROOT / "diagrams"
 TOOLS = ROOT / "tools"
+LONG_CODE_LINES = 12  # code blocks longer than this get class "long" (split on print)
 class BuildError(Exception):
     pass
 
@@ -64,7 +65,9 @@ def render_code(lang, code):
     except Exception:
         raise BuildError(f"unknown code language: {lang}")
     body = highlight(code, lexer, HtmlFormatter(nowrap=True))
-    return f'<pre class="code" data-lang="{esc(lang)}"><code>{body.rstrip()}</code></pre>'
+    # Long blocks may split across printed pages; short ones stay whole.
+    cls = "code long" if code.count("\n") + 1 > LONG_CODE_LINES else "code"
+    return f'<pre class="{cls}" data-lang="{esc(lang)}"><code>{body.rstrip()}</code></pre>'
 
 
 def expand_code(text):
