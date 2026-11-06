@@ -1,0 +1,127 @@
+<p class="lead">An eval is a fixed set of tasks plus a way to grade the result. It is the only honest way to tell whether a new prompt, model or agent setup is better, or just different on the few runs you happened to watch.</p>
+
+<h3>The idea</h3>
+<p>You already know this from performance work. You make a change that should speed up a service, hit the endpoint once, and it feels quicker. Nobody believes that. You run a fixed load test, several times, before and after, and compare the numbers. An eval is a load test for an agent setup.</p>
+<p><a href="#sampling">How the next token is chosen</a> showed why one run proves nothing: every run is one roll of the dice. An eval turns many rolls into a number you can compare:</p>
+<ol>
+  <li><b>Fix the tasks.</b> The same tasks every time, written down, so "before" and "after" answer the same questions.</li>
+  <li><b>Fix the grading.</b> A rule that says pass or fail without you squinting at the diff. Tests where you can, a model grader where you can't.</li>
+  <li><b>Run each setup on every task, a few times.</b> Same tasks, same number of runs, fresh session each time.</li>
+  <li><b>Compare task by task</b>, not just the totals. That is where "better" and "just different" split apart.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The eval loop, top to bottom: a fixed set of tasks from past tickets; run setup A and setup B on every task three times each; grade every run with tests first and a model grader only for what tests can't check; compare pass rates task by task; then decide whether B is better, worse, or just different.">
+flowchart TD
+  A["Fixed tasks<br/>past tickets, written down"] --> B["Run setup A and setup B<br/>every task, 3 times each"]
+  B --> C["Grade every run<br/>tests first, model grader second"]
+  C --> D["Compare task by task<br/>pass rate A vs B"]
+  D --> E["Better, worse,<br/>or just different?"]
+  style C stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p><b>The tasks.</b> The best tasks for a product engineer are your own past tickets: real work, in your real repos, with a known good answer, the merged fix. Check out the commit just before the fix, give the agent the ticket text, and grade with the tests that came with the fix. That is exactly how the public SWE-bench benchmark works. A task can be a small file:</p>
+<pre><code class="language-yaml">id: refund-rounding
+repo: payments-service
+# the commit just before the fix
+base: 3f2a9c1
+prompt: |
+  Refunds of half a cent round
+  the wrong way. Fix it.
+grade:
+  # failed before the fix
+  fail_to_pass:
+    - tests/test_refund.py
+  # passed before, must still pass
+  pass_to_pass:
+    - tests/
+</code></pre>
+<p>The harness is a loop. Nothing more is needed:</p>
+<pre><code class="language-python">for task in tasks:
+    for run in range(3):
+        wt = new_worktree(task.base)
+        run_agent(wt, task.prompt)
+        ok = run_tests(wt, task.grade)
+        results[task.id].append(ok)
+</code></pre>
+
+<p><b>The grading.</b> There are two ways, and they fail differently:</p>
+<ul>
+  <li><b>Tests (and other code checks: lint, type checks, an architecture test).</b> Cheap, repeatable and blind to style. But they only check what they check. A test that is too narrow fails a correct fix, and a weak test passes a wrong one.</li>
+  <li><b>A model as the grader</b> (often called "LLM-as-a-judge"). It can grade what tests can't: is the PR description accurate, does the code use the team's client library. But the grader samples too, and it has known biases. A 2023 study by Lianmin Zheng and colleagues (UC Berkeley and others) found judges that prefer the answer shown first (<b>position bias</b>), prefer longer answers (<b>verbosity bias</b>), and may favour their own writing (<b>self-enhancement bias</b>). Ask it narrow yes/no questions, swap the order when comparing two answers, and check it against your own grades on a handful of runs.</li>
+</ul>
+
+<p><b>How many tasks?</b> More than you'd hope. A small set can only show big changes. Anthropic's guide to eval statistics says to treat your tasks as a sample and report an error bar: a 95% range is about ±2 standard errors, where the standard error of a pass rate p over n tasks is √(p(1−p)/n). At a 60% pass rate:</p>
+<table>
+  <tr><th>Tasks</th><th>95% range</th></tr>
+  <tr><td>10</td><td>±30 points</td></tr>
+  <tr><td>50</td><td>±14 points</td></tr>
+  <tr><td>100</td><td>±10 points</td></tr>
+  <tr><td>500</td><td>±4 points</td></tr>
+</table>
+<p>Two tricks from the same guide help a small set: run each task several times and average, which removes some of the dice-roll noise, and compare <b>paired</b>, the same task under A and under B, which removes the "some tasks are just hard" noise.</p>
+
+<p><b>Overfitting.</b> If you tweak your setup until these exact tickets pass, you have tuned it to the test, like a model that memorises its training data. It may do no better on next week's ticket. Keep a few tickets you never look at while tuning, and add fresh tickets every month.</p>
+
+<h3>Worked example</h3>
+<p>Six past tickets, each run 3 times with the old setup (A) and with a new context file (B):</p>
+<table>
+  <tr><th>Ticket</th><th>A</th><th>B</th></tr>
+  <tr><td>Retry bug</td><td>3/3</td><td>3/3</td></tr>
+  <tr><td>Add a migration</td><td>0/3</td><td>3/3</td></tr>
+  <tr><td>Config flag</td><td>3/3</td><td>3/3</td></tr>
+  <tr><td>Saga step</td><td>2/3</td><td>1/3</td></tr>
+  <tr><td>Log parser</td><td>1/3</td><td>1/3</td></tr>
+  <tr><td>New API field</td><td>3/3</td><td>0/3</td></tr>
+  <tr><td><b>Total</b></td><td><b>12/18</b></td><td><b>11/18</b></td></tr>
+</table>
+<p>The totals say "no change". The rows say something else: B fixed migrations and broke the API field ticket, both 3 out of 3, so not dice. That is <b>just different</b>. Read B's failed API field runs, find the line in the new context file that caused it, and you may get a setup that is better at both.</p>
+
+<h3>Your turn</h3>
+<predict id="eval-feels-better" minutes="2">
+  <q><p>You rewrite your agent instructions and try them on three tasks from this week. All three go well. "It feels much better," you tell the team. What's missing before that claim means anything?</p></q>
+  <answer><p><b>A baseline, fixed tasks and a grade.</b> You didn't run the old instructions on the same three tasks, and "went well" was your judgement on the day. If the old version also passed 60% of the time, it would go 3 for 3 about one time in five (0.6 × 0.6 × 0.6 ≈ 0.22). Run both versions on the same written-down tasks, graded by tests, before you call it better.</p></answer>
+</predict>
+
+<predict id="eval-long-judge" minutes="2">
+  <q><p>Your eval uses a model to score PR descriptions from 1 to 10. A new prompt makes the agent write descriptions twice as long, and the average score jumps from 6.8 to 7.9. The facts in them are the same. What happened?</p></q>
+  <answer><p><b>Verbosity bias.</b> Model graders tend to reward length. In Zheng et al.'s test, padding answers with repeated, reworded list items fooled two of the three judges tested 21 times out of 23 (91%); GPT-4, the strongest at the time, only 2 times (9%). Grade with narrow yes/no checks ("does it name the migration?", "is every claim true?"), or compare two answers of similar length, and spot-check the grader against your own scores.</p></answer>
+</predict>
+
+<predict id="eval-tuned-ten" minutes="2">
+  <q><p>For two weeks you tweak your context file until all 10 of your eval tickets pass, 3 runs each. Then a real new ticket fails in the same way it used to. How did 10 out of 10 fool you?</p></q>
+  <answer><p><b>You overfitted.</b> Each tweak was chosen because it fixed one of those 10 tickets, so some of them only help those tickets (one may even mention a file by name). The eval stopped measuring your setup and started measuring how well you know the test. Keep 3 or 4 tickets hidden while tuning and check them only at the end, and keep adding new tickets.</p></answer>
+</predict>
+
+<predict id="eval-git-log" minutes="3">
+  <q><p>You build an eval from past tickets: clone the repo, check out the commit before each fix, run the agent. It solves 10 out of 10, even the hard ones. A colleague reads the session logs and laughs. What did they see?</p></q>
+  <hint>What else is in a cloned repo besides the files you checked out?</hint>
+  <answer><p><b>The agent found the answer in git history.</b> Checking out an old commit doesn't delete the newer ones: branches, tags and the remote still point at the fix, and <code>git log --all</code> finds it. This happened on SWE-bench: in September 2025 a researcher reported agents (including Claude 4 Sonnet and Qwen3-Coder) running <code>git log --all</code> and reading the real fix. The maintainers rebuilt the task images with all future history removed. Copy the files at the base commit into a fresh repo with no history.</p></answer>
+</predict>
+
+<predict id="eval-8-of-10" minutes="3">
+  <q><p>Stretch: your old setup solved 6 of your 10 eval tickets. The new one solves 8. Your manager wants to roll it out to the team. Is 6 → 8 good evidence?</p></q>
+  <hint>How often would the old setup score 8 just by luck?</hint>
+  <answer><p><b>Weak evidence.</b> With 10 tasks the error bar is about ±30 points. If the old setup's true pass rate were 60%, it alone would score 8 or more about one time in six (binomial: 16.7%). Look at the rows: run each ticket 3 times with both setups and check which tickets flipped, and whether any broke. Two tickets going from 0/3 to 3/3 with nothing broken is a much stronger signal; 6 → 8 on single runs is not.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Pick 10 past tickets from your own repos that have tests, and write each one down as a task: base commit, ticket text, the tests that grade it. Run each in a copy with no later git history. That is your personal eval set.</li>
+  <li>Before you change your setup (instructions, model, tools), run the set 3 times with the old one. After the change, run it again and compare ticket by ticket.</li>
+  <li>When you use a model to grade, write narrow yes/no questions and grade 10 runs yourself to see whether it agrees with you.</li>
+</ul>
+<p><b>If someone asks</b> "is the new model better for us?": "One try can't tell you, because every run is a dice roll. I keep ten of our past tickets with their tests as a fixed eval, run both models on each a few times, and compare ticket by ticket."</p>
+</atwork>
+
+<fact title="The benchmark that wore out">
+<p>In October 2023, Carlos Jimenez and colleagues at Princeton released SWE-bench: 2,294 real GitHub issues from 12 popular Python projects. Each task is graded by the tests from the pull request that fixed the issue: tests that failed before the fix must pass, and tests that passed must keep passing. The best model then, Claude 2, solved 1.96%. In August 2024, OpenAI had 93 software developers check 1,699 of the tasks for vague issues and unfair tests, and kept 500 clean ones as SWE-bench Verified, which became the coding score most labs reported. In February 2026, OpenAI said it would stop reporting it. Engineers reviewed 138 tasks that models kept failing and found at least 59.4% had tests that rejected correct fixes. And models from three labs could reproduce the exact fix from memory given only the task ID and a hint, because the projects were in their training data.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Jimenez et al., ICLR 2024; OpenAI, August 2024 and February 2026; Zheng et al., 2023; Anthropic, "A statistical approach to model evaluations", 2024; SWE-bench issue #465).</p>
+
+<recap><ul>
+  <li>An eval is fixed tasks plus a fixed way to grade. Run each setup on every task several times.</li>
+  <li>Grade with tests where you can; a model grader has biases (order, length, its own style), so keep its questions narrow.</li>
+  <li>Small sets only show big changes. Compare task by task, keep some tasks hidden, and add new ones so the eval doesn't wear out.</li>
+</ul></recap>
