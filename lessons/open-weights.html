@@ -1,0 +1,111 @@
+<p class="lead">An open-weight model is one whose trained numbers you can download and run anywhere: your laptop, your cloud account, a server with no internet. That gives you control over privacy, versions and cost, but the best open models still trail the best closed ones, and the gap is widest on long agentic tasks.</p>
+
+<h3>The idea</h3>
+<p>Think of a program you can download as a binary but not as source code. You can run it on any machine, keep the old version forever, and even patch it. What you can't do is rebuild it from scratch or see exactly what went into it.</p>
+<p>Open weights work like that binary. A model is code plus <b>weights</b>: billions of numbers set during training. Training is the build step, and the training data is most of the source. Models come in three levels of openness:</p>
+<ol>
+  <li><b>Closed (API only).</b> You send tokens to the vendor's endpoint and get tokens back. The weights never leave the vendor. Today's <b>frontier</b> models, the most capable ones at any moment, are in this group.</li>
+  <li><b>Open weights.</b> You can download the weight files under a licence and run them anywhere. The training data and full training code usually stay private.</li>
+  <li><b>Open source AI.</b> Weights, the complete training code, and enough detail about the training data to rebuild the model, all under terms that let anyone use, study, change and share it.</li>
+</ol>
+
+<pre class="mermaid" data-alt="Three levels of model openness, top to bottom. Closed API: you get only an endpoint. Open weights: you also get the weight files and a licence. Open source AI under the OSI definition: you also get the training code and details of the training data.">
+flowchart TD
+  A["Closed API<br/>you get: an endpoint"] --> B["Open weights<br/>+ weight files, a licence"]
+  B --> C["Open source AI (OSI)<br/>+ training code<br/>+ training data details"]
+  style C stroke-width:3px
+</pre>
+
+<p>The third level has a formal definition. In October 2024 the Open Source Initiative (OSI), the group behind the Open Source Definition for software, published the <b>Open Source AI Definition 1.0</b>. It requires all three parts: data information, code and parameters. Weights alone are not enough. When the OSI tested real models against it, Pythia, OLMo and T5 passed. Llama 2, Grok, Phi-2 and Mixtral didn't, because parts were missing or their licences added restrictions. Most models people call "open source" are open weights.</p>
+
+<h3>Up close</h3>
+<p><b>Read the licence: it decides what you may do.</b> Open-weight licences range from standard open-source licences to custom ones with conditions. Some current examples, each from the vendor's own model card or licence:</p>
+<table>
+  <tr><th>Model</th><th>Licence</th></tr>
+  <tr><td>OpenAI gpt-oss</td><td>Apache 2.0</td></tr>
+  <tr><td>Qwen3-Coder-30B-A3B</td><td>Apache 2.0</td></tr>
+  <tr><td>DeepSeek-V4</td><td>MIT</td></tr>
+  <tr><td>Kimi K2.6</td><td>Modified MIT: show "Kimi K2.6" in your product's UI above 100M monthly users or $20M monthly revenue</td></tr>
+  <tr><td>Llama 4</td><td>Llama 4 Community License: show "Built with Llama", follow an acceptable use policy, and ask Meta first above 700M monthly users</td></tr>
+</table>
+<p><b>Your harness barely notices the difference.</b> Open-source model servers such as vLLM serve downloaded weights behind the same chat API shape that OpenAI uses. Start the server, then point your client at it:</p>
+<pre><code class="language-bash"># downloads the weights, then
+# serves them on port 8000
+vllm serve openai/gpt-oss-20b \
+  --enable-auto-tool-choice \
+  --tool-call-parser openai
+</code></pre>
+<pre><code class="language-python">from openai import OpenAI
+
+# same client, local address
+client = OpenAI(
+    base_url=LOCAL_URL,  # :8000/v1
+    api_key="unused",
+)
+</code></pre>
+<p>Note the two tool flags. The model writes tool calls as plain text in its own format, and the server has to parse that text into a structured tool call (see <a href="#tool-calls">Tool calls up close</a>). Get the parser or chat template wrong and the weights are fine, but the tool calls break.</p>
+<p><b>Same weights, different quality.</b> That is not a theoretical risk. In 2025, Moonshot AI published a checker for third-party hosts of its Kimi K2 model, because users reported broken tool calls. In its late-2025 results, Moonshot's own API matched the tool schema every time, while some other setups got it wrong in 1 of 8 to 1 of 6 calls. Picking an open model also means picking who serves it, and testing them.</p>
+
+<h3>How far behind?</h3>
+<p>Epoch AI, a research group that tracks AI progress, combines many benchmarks into one score, the Epoch Capabilities Index. In May 2026 it reported that since January the best open-weight models had trailed the best closed models by an average of <b>four months</b>.</p>
+<p>The gap depends on the task. In July 2026 the UK's AI Security Institute tested the strongest open models on cyber-security work. On short, narrow tasks they matched closed models from about 4 months earlier. On long, multi-step attack scenarios the gap was up to about 7 months. The institute calls that second result weaker evidence, because there were fewer scenarios. Simple arithmetic explains why long tasks are harder: if each step goes right 98% of the time, a 60-step task has no mistakes only about 30% of the time (0.98<sup>60</sup> ≈ 0.30).</p>
+
+<h3>Worked example</h3>
+<p>Why teams choose one or the other:</p>
+<table>
+  <tr><th>Need</th><th>Closed frontier</th><th>Open weights</th></tr>
+  <tr><td>Best result on a long agentic task</td><td>Yes</td><td>Months behind</td></tr>
+  <tr><td>Code never leaves our network</td><td>Only via contract or your cloud provider</td><td>Yes, if you host it yourself</td></tr>
+  <tr><td>Same model in two years</td><td>Old versions get retired</td><td>Yes, you keep the files</td></tr>
+  <tr><td>Fine-tune on our own data</td><td>Limited, vendor-dependent</td><td>Yes</td></tr>
+  <tr><td>Nothing to run or patch</td><td>Yes</td><td>You run the servers</td></tr>
+</table>
+<p>Cost cuts both ways: many hosts compete to serve the same open weights, which pushes prices down, but running your own GPUs is usually more expensive than an API. That is the subject of <a href="#local-gpu">Running a model on your own GPU</a> and <a href="#inference-economics">Why an API is usually cheaper</a>.</p>
+
+<h3>Your turn</h3>
+<predict id="ow-open-source-claim" minutes="2">
+  <q><p>A colleague says a model is "open source": you can download the weights, but the training data isn't published and the licence forbids some uses. Is it open source?</p></q>
+  <answer><p><b>No, it's open weights.</b> Under the OSI's Open Source AI Definition you also need the full training code, enough detail about the training data to rebuild it, and terms that allow any use. You can still run it, keep it and fine-tune it. Just read the licence before you build on it, because that's what legal will ask about.</p></answer>
+</predict>
+
+<predict id="ow-hosted-privacy" minutes="2">
+  <q><p>Your team switches to an open-weight model "for privacy", and calls it through a public inference provider's API. Is your code now private?</p></q>
+  <answer><p><b>No more private than before.</b> The provider receives every prompt, just like a closed-model API. The licence of the weights changes nothing about where your tokens go. The privacy benefit comes from <b>where the model runs</b>: on machines you control. Otherwise, the provider's contract and data retention terms matter, as with any API.</p></answer>
+</predict>
+
+<predict id="ow-small-model-tasks" minutes="2">
+  <q><p>You can run a small open model next to your main frontier agent. Which of these would you give it? (a) Shorten 5,000 lines of test output to the failing tests and their errors. (b) Plan a schema change across four services. (c) Tag each incoming alert with the service it belongs to.</p></q>
+  <answer><p><b>(a) and (c).</b> They are short, single-step jobs with an answer you can check, and they run often, so a cheap local model pays off. (b) is a long, multi-step task where small mistakes compound, which is exactly where open models lag most. Keep it on the strongest model you're allowed to use.</p></answer>
+</predict>
+
+<predict id="ow-benchmark-gap" minutes="3">
+  <q><p>An open model scores close to a frontier model on a popular coding benchmark. In your 60-step agent session on a real service, it keeps losing track and repeating itself. Why the difference?</p></q>
+  <answer><p><b>Short tasks hide the gap.</b> Many benchmark tasks take a few steps. A long session chains dozens of steps, and a small error rate per step grows with each one. Independent tests (such as the UK AI Security Institute's) found open models further behind on long multi-step tasks than on short ones. Judge a model on your own tasks, not on one score.</p></answer>
+</predict>
+
+<predict id="ow-tool-calls-host" minutes="3">
+  <q><p>Stretch: the same open-weight model, same prompt, on two hosts. On host A your agent works. On host B it sometimes calls tools with broken JSON, or answers in text when it should call a tool. The weights are identical. What's different?</p></q>
+  <hint>Who turns the model's text into a tool call?</hint>
+  <answer><p><b>The serving stack.</b> The model writes tool calls as text in its own format. The server needs the right chat template and parser to turn that into a structured call, and it may also run a compressed (quantised) copy of the weights. Moonshot AI found exactly this with hosts of Kimi K2 and published a checker for it. Test a host on your own tool calls before you trust it.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Find your company's written rules on which models and providers may see which code, secrets and customer data. If there are none, ask security or legal, and write the answer down where your team can find it.</li>
+  <li>Before you use an open model, read its model card and licence: user or revenue limits, attribution, acceptable use.</li>
+  <li>Try a small open model on one short, checkable side task in your loop, such as summarising test output. Compare it with your main model on 10 real examples before you rely on it.</li>
+</ul>
+<p><b>If someone asks</b> "should we just host an open model so our code stays private?": "Hosting open weights ourselves does keep code inside our network, but the best open models trail the best closed ones by a few months, and more on long agentic tasks. One sensible split is a frontier model under an approved contract for the main work, and a self-hosted open model for data that must never leave."</p>
+</atwork>
+
+<fact title="The leak that started the open-model scene">
+<p>On 24 February 2023, Meta announced LLaMA, a family of models up to 65 billion parameters. Its paper claimed the 13B version beat the 175B GPT-3 on most benchmarks. Access was research-only, granted case by case. On 3 March, about a week later, a torrent of the weights was shared on 4chan, and researchers confirmed the files were genuine. A week after that, on 10 March, Georgi Gerganov published llama.cpp, with the goal "to run the model using 4-bit quantization on a MacBook". His README said it was "hacked in an evening" and "not going to be maintained properly". It became one of the most widely used ways to run models locally. In July 2023, Meta released Llama 2 free for research and commercial use.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (OSI Open Source AI Definition 1.0 and FAQ; model cards and licences for gpt-oss, Qwen3-Coder, DeepSeek-V4, Kimi K2.6 and Llama 4; vLLM docs; Moonshot AI K2 Vendor Verifier; Epoch AI, May 2026; UK AI Security Institute, July 2026; Meta's LLaMA announcement and paper; llama.cpp history).</p>
+
+<recap><ul>
+  <li>Open weights means you can download and run the trained numbers. Open source AI (OSI) also needs the training code and training data details. Most "open source" models are open weights.</li>
+  <li>The best open models trail the frontier by a few months on average, and more on long agentic tasks. They suit short, checkable side tasks well.</li>
+  <li>Privacy comes from where the model runs, not its licence. Read the licence, and test each host's tool calls.</li>
+</ul></recap>
