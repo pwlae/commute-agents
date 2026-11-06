@@ -1,0 +1,125 @@
+<p class="lead">A subagent is a second agent loop that your agent starts with a prompt it writes itself. It works in its own fresh context and hands back only a short summary. Used for searching and reviewing, it keeps your main session clean and fast. Used to copy your org chart, it mostly gets in the way.</p>
+
+<h3>The idea</h3>
+<p>Picture yourself deep in a bug. You message a colleague: "find every place we call the payments client, send me a list". They spend an hour in the code. You get ten lines back, and you never had to read the 60 files they opened. Your head stays on the bug.</p>
+<p>A subagent works the same way:</p>
+<ol>
+  <li><b>The main agent calls a tool.</b> In Claude Code it is called <code>Agent</code>. Its input is a prompt that the main agent writes: the task, in its own words.</li>
+  <li><b>The harness starts a new loop</b>, the same loop as in <a href="#agent-loop">An agent is a while loop</a>, with a fresh context, its own system prompt, its own tool list and possibly a cheaper model. It doesn't see your conversation.</li>
+  <li><b>The subagent works.</b> It may take 40 steps and read 100,000 tokens of code. All of that stays in <em>its</em> context.</li>
+  <li><b>Only the final answer comes back</b>, as the tool result in the main session. The 40 steps never enter your context.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The main session makes one Agent tool call with a prompt it wrote. Two subagents start in parallel, each with a fresh context; each reads many files. Each returns a short summary. Only the two summaries are added to the main session's context.">
+flowchart TD
+  A["Main session"] --> B["Agent tool call:<br/>a prompt it wrote"]
+  B --> S1["Subagent 1<br/>fresh context<br/>reads 60 files"]
+  B --> S2["Subagent 2<br/>fresh context<br/>reads 40 files"]
+  S1 --> R["Two short<br/>summaries"]
+  S2 --> R
+  R --> A2["Main session:<br/>only summaries added"]
+  style R stroke-width:3px
+</pre>
+
+<p>That is all "orchestration" is. There is no special orchestrator software: the main agent splits the work, makes several of these tool calls at once, and reads the summaries. "My agent runs more agents" is the honest, complete answer. The next lesson, <a href="#headless">Running agents without you</a>, starts the same loop from a script or CI instead.</p>
+<p>Subagents earn their place for three reasons:</p>
+<ul>
+  <li><b>Clean context.</b> Searches, logs and file dumps you won't need again stay out of your session, so every later step is cheaper and more focused (see <a href="#context-management">Why long sessions get worse</a>).</li>
+  <li><b>Parallel work.</b> Independent questions run side by side.</li>
+  <li><b>Cheaper models for reading.</b> Finding code doesn't need your strongest model.</li>
+</ul>
+
+<h3>Up close</h3>
+<p>In Claude Code a subagent is a Markdown file in <code>.claude/agents/</code> (commit it, and your team gets it) or <code>~/.claude/agents/</code>. Only <code>name</code> and <code>description</code> are required:</p>
+<pre><code class="language-markdown">---
+name: diff-reviewer
+description: Reviews the current
+  diff for bugs. Use after code
+  changes, before a commit.
+tools: Read, Grep, Glob
+model: sonnet
+---
+Your task contains a diff. Check
+it against CLAUDE.md and the
+tests. Reply with at most 10
+findings, worst first, each with
+file:line. Don't fix anything.
+</code></pre>
+<ul>
+  <li><b><code>description</code></b> is what the main agent reads to decide when to delegate. Make it say <em>when</em>.</li>
+  <li><b><code>tools</code></b> is an allowlist. Leave it out and the subagent gets every tool it can have.</li>
+  <li><b><code>model</code></b> takes an alias such as <code>haiku</code> or <code>sonnet</code>, a full model ID, or <code>inherit</code>. Without it, the subagent uses your session's model. There is also <code>effort</code> (see <a href="#thinking-effort">Thinking and effort levels</a>).</li>
+  <li><b>The body is its system prompt.</b> The task itself arrives as the prompt the main agent writes.</li>
+</ul>
+<p>What a fresh subagent starts with: its own system prompt, that delegation prompt, your <code>CLAUDE.md</code> files (the built-in Explore and Plan agents skip them) and a git status snapshot. Not your conversation, not the files the main agent already read. So <b>the prompt is the whole brief</b>, and anything that only lives in the chat doesn't reach it. Claude Code also offers a <em>fork</em>: a subagent that copies the whole conversation and shares its prompt cache, for side tasks that need all that background.</p>
+<p><b>Permissions carry over.</b> A subagent inherits your permission rules, and a deny rule such as <code>Bash(git push *)</code> applies to it too. If your session runs in <code>auto</code>, <code>acceptEdits</code> or <code>bypassPermissions</code> mode, the subagent runs in that mode, whatever its own file says. Codex works similarly: its docs say subagents inherit your sandbox, and that instructions to avoid edits "don't create a separate read-only sandbox". A limit you need is a permission, not a sentence.</p>
+<p><b>It isn't free.</b> Each subagent pays for its own steps and builds its own prompt cache. Writing about their multi-agent Research feature in 2025, Anthropic's engineers said agents "typically use about 4× more tokens than chat interactions, and multi-agent systems use about 15× more tokens than chats". It pays off when the work splits cleanly; they add that "most coding tasks involve fewer truly parallelizable tasks than research".</p>
+
+<h3>Job titles get in the way</h3>
+<p>The tempting setup copies the org chart: a "backend agent", a "frontend agent", a "QA agent", each with a persona prompt. In practice:</p>
+<ul>
+  <li><b>They refuse work.</b> "You only work on backend services" is an instruction, and the model follows it, including on the one-line UI fix that is part of your ticket.</li>
+  <li><b>Handoffs lose detail.</b> Each handoff is a summary, so you pay the cost of compaction at every hop.</li>
+  <li><b>They add nothing the model lacks.</b> One general agent with your context files already writes backend, frontend and tests.</li>
+</ul>
+<p>Split by <b>kind of work and what it needs to see</b>, not by job title. A searcher reads a lot and returns a little. A reviewer has fresh eyes: it didn't write the code, so it doesn't share the author's assumptions, and without <code>Edit</code> it can't quietly "fix" what it finds. Give a subagent a verb, not a title.</p>
+
+<h3>Worked example</h3>
+<table>
+  <tr><th>Task</th><th>Subagent?</th></tr>
+  <tr><td>"Where do we publish <code>OrderCreated</code>?" across 3 repos</td><td>Yes: read many files, return 10 lines, cheap model</td></tr>
+  <tr><td>Review your diff before commit</td><td>Yes: fresh context, no edit tools</td></tr>
+  <tr><td>Compare 3 rate-limit libraries</td><td>Yes: 3 in parallel, independent</td></tr>
+  <tr><td>Rename a field in 12 files</td><td>No: one change, one writer</td></tr>
+  <tr><td>A bug you debug together, step by step</td><td>No: it needs your conversation</td></tr>
+</table>
+
+<h3>Your turn</h3>
+<predict id="sub-search-context" minutes="2">
+  <q><p>Mid-feature, you ask your main session to find every caller of the payments client. It reads 60 files, about 90,000 tokens. Then you go back to the feature. What would a search subagent have changed?</p></q>
+  <answer><p><b>Only its summary, maybe 500 tokens, would have entered your session.</b> The 90,000 tokens stay in the subagent's context. Without it, those tokens ride along on every later step of the feature, costing money and pulling the model's attention away from the actual work. The subagent's tokens are still billed, but once, not resent on every step.</p></answer>
+</predict>
+
+<predict id="sub-backend-refuses" minutes="2">
+  <q><p>Your team set up a "backend agent" whose prompt says "You are a backend engineer. Only work in <code>services/</code>." The ticket also needs a one-word label change in <code>web/</code>. The agent says the frontend is out of its scope and stops. Bug?</p></q>
+  <answer><p><b>No, the prompt worked exactly as written.</b> A scope in a persona prompt is an instruction, and models follow instructions. The persona added nothing useful (the model can edit a label) and blocked real work. Use one general agent with the team's context files. If something truly must not be touched, make that a permission rule or hook (see <a href="#hooks-permissions">Hooks and permissions</a>), not a job title.</p></answer>
+</predict>
+
+<predict id="sub-parallel-same-file" minutes="2">
+  <q><p>To go faster, you ask for three parallel subagents: one adds logging, one adds metrics, one adds retries, all in <code>orders_handler.py</code>. Afterwards the metrics change is missing and a test fails. What happened?</p></q>
+  <answer><p><b>Three writers, one file, nobody watching the others.</b> Each subagent read the file before the others changed it, so its edits were based on a stale copy, and a stale edit either fails or overwrites another agent's change. Codex's docs warn about exactly this: "agents editing code at once can create conflicts". Run subagents in parallel for reading. For writing, use one writer per file, or separate worktrees for changes that don't touch the same files.</p></answer>
+</predict>
+
+<predict id="sub-reviewer-edits" minutes="3">
+  <q><p>Your reviewer subagent has <code>tools: Read, Grep, Glob, Bash</code> and its prompt says "Don't fix anything." Now and then it runs <code>sed -i</code> to fix a typo it found. Why, and how do you make it truly read-only?</p></q>
+  <hint>Which of those tools can change a file?</hint>
+  <answer><p><b>Bash can write files, and "don't fix" is only a request.</b> Without <code>Edit</code> the model can still edit through the shell. Remove <code>Bash</code> from the list and have the main agent pass it the diff, or add a <code>PreToolUse</code> hook in its definition that blocks writing commands. Claude Code's docs show this pattern for a read-only database agent: the prompt explains, the hook enforces.</p></answer>
+</predict>
+
+<predict id="sub-missing-brief" minutes="3">
+  <q><p>Stretch: in a long session you and the agent worked out that refund amounts are in pence. The agent then hands "write tests for the refund rounding" to a subagent, which writes every amount in pounds. Why, when the main agent knew?</p></q>
+  <hint>What does a fresh subagent see?</hint>
+  <answer><p><b>The subagent never saw your conversation.</b> It got its own system prompt, the CLAUDE.md files and the prompt the main agent wrote, and that prompt didn't mention pence. Facts that matter for every task belong in CLAUDE.md. For one-off facts, ask the main agent to put them in the brief, or use a fork, which copies the whole conversation.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Use subagents for searching and reviewing, not for job titles. Turn the side task you do most (finding code, reviewing a diff) into a definition file in <code>.claude/agents/</code> and commit it.</li>
+  <li>Give each one a fixed output format: "at most 10 lines, each with file:line". A short summary is the whole point.</li>
+  <li>Make limits permissions: a tool list without <code>Edit</code> or <code>Bash</code>, a hook, a deny rule. Never just "please don't".</li>
+  <li>Run in parallel for reading. One writer per file.</li>
+</ul>
+<p><b>If someone asks</b> "should we build a team of agents: architect, developer, tester?": "Usually not. A subagent is just the same agent started with a fresh context and a prompt, so I use them to search and review without filling my main session, and I keep limits like read-only as permissions rather than job titles."</p>
+</atwork>
+
+<fact title="Screw in another segment">
+<p>On page 10 of an internal Bell Labs memo dated 11 October 1964, Doug McIlroy summed up his "strongest concerns". Point one: "We should have some ways of connecting programs like garden hose--screw in another segment" whenever data needs processing another way. Dennis Ritchie kept that yellowed page attached by magnet to his office wall. McIlroy kept pushing, and pipes appeared in Unix in 1972, built by Ken Thompson. McIlroy later recalled that Thompson changed all the programs to read standard input "in the same night", and the next morning everyone was showing off one-liners. In 1978 McIlroy and two colleagues wrote the style down in the Bell System Technical Journal: "Make each program do one thing well", and "Expect the output of every program to become the input to another, as yet unknown, program. Don't clutter output with extraneous information." That is a good spec for a subagent: one job, and a short answer that another program, your main agent, reads next.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: subagents; Codex docs: subagents; Anthropic engineering blog, June 2025; Ritchie's "Prophetic Petroglyphs" and "The Evolution of the Unix Time-sharing System"; Mahoney's Unix oral history; BSTJ, July–August 1978).</p>
+
+<recap><ul>
+  <li>A subagent is the same agent loop started by a tool call: fresh context, a prompt the parent writes, only a summary comes back.</li>
+  <li>Use them for clean context, parallel reading and cheaper models. They cost extra tokens, and they don't see your conversation, so the prompt is the whole brief.</li>
+  <li>Give subagents verbs (search, review), not job titles, and make their limits permissions, not instructions.</li>
+</ul></recap>
