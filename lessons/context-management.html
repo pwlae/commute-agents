@@ -1,0 +1,132 @@
+<p class="lead">An agent's context only grows: every file it reads, every log and every failed attempt stays there until something removes it. Models use long contexts less reliably than short ones, so a long session gets slower, more expensive and sloppier. Knowing how harnesses shrink the context, and what that costs, tells you when to start fresh.</p>
+
+<h3>The idea</h3>
+<p>Picture your desk on a long debugging day. Every printout stays on it: logs, stack traces, three versions of the same config. In the morning your lead said "don't touch the payments schema". By evening that note is under a pile. You didn't forget it, but it is hard to find among everything else, and you start mixing up the old config with the new one.</p>
+<p>An agent session works the same way:</p>
+<ol>
+  <li><b>Everything stays.</b> As you saw in <a href="#agent-loop">An agent is a while loop</a>, each step appends the tool result to the history and sends it all again. A file read at minute 10 and edited four times since is still in there, in its old version.</li>
+  <li><b>Long context is used less well.</b> Researchers keep measuring the same thing: as the input grows, models find and use the facts in it less reliably, even on simple tasks. Anthropic's own docs say "response quality degrades as a conversation grows", and its engineers call this <b>context rot</b>. The exact causes are still being studied, but the effect is real.</li>
+  <li><b>The harness makes room.</b> Near the limit, it removes old tool results, or replaces old turns with a summary. That is called <b>compaction</b>.</li>
+  <li><b>Every summary loses something.</b> Exact wording, early instructions, and why an approach was dropped can all disappear.</li>
+  <li><b>Or you start fresh on purpose</b>, with a short written brief. Often this is the best option.</li>
+</ol>
+
+<pre class="mermaid" data-alt="A session starts with a brief and the context file. Every step adds files, logs and failed attempts. If the task is the same but the context is too big, the harness clears old tool results or compacts the history into a summary, and details are lost. If the task is new, start a fresh session with a short brief.">
+flowchart TD
+  A["Start: brief<br/>+ CLAUDE.md"] --> B["Each step adds<br/>files, logs, attempts"]
+  B --> C{"What now?"}
+  C -- "same task,<br/>too big" --> D["Clear old results<br/>or compact:<br/>details lost"]
+  C -- "new task" --> F["Fresh session<br/>+ short brief"]
+  D --> B
+  style F stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p>Harnesses have three ways to shrink the context. Each one throws away something different:</p>
+<table>
+  <tr><th>Method</th><th>What is lost</th></tr>
+  <tr><td><b>Clear old tool results</b></td><td>The raw output of old tool calls. A short placeholder says it was removed, and the agent can run the tool again.</td></tr>
+  <tr><td><b>Compact</b></td><td>The old turns, replaced by a summary the model writes. Details the summary skipped are gone.</td></tr>
+  <tr><td><b>Fresh session</b></td><td>The whole conversation. Only files on disk remain: code, context files, your notes.</td></tr>
+</table>
+<p>Anthropic's API offers the first two as request options, so you don't write the summariser yourself. Here is compaction (in beta, November 2026) on a request in the agent loop:</p>
+<pre><code class="language-python">resp = client.beta.messages.create(
+    betas=["compact-2026-01-12"],
+    model=MODEL,
+    max_tokens=16000,
+    messages=msgs,
+    context_management={"edits": [{
+        "type": "compact_20260112",
+        # summarise once the prompt
+        # passes 150,000 tokens
+        "trigger": {
+            "type": "input_tokens",
+            "value": 150000,
+        },
+        # replaces the default prompt,
+        # so list all that must stay
+        "instructions": (
+            "Keep file paths, test"
+            " commands, decisions"
+            " and open bugs."),
+    }]},
+)
+# a compaction block comes first;
+# the API ignores what came before
+msgs.append({"role": "assistant",
+             "content": resp.content})
+</code></pre>
+<p>Two costs to remember. Summarising is itself a big request: the model reads the whole conversation to write it. And any shrink rewrites older parts of the history, so the <a href="#prompt-caching">prompt cache</a> misses from that point on and has to build up again. That is why harnesses compact rarely and all at once.</p>
+<p>Coding agents do this for you. Claude Code compacts automatically as the window fills. You can run <code>/compact</code> with a focus ("<code>/compact keep the API changes</code>") or <code>/clear</code> to start over. With 1-million-token windows, running out is now rare. The reason to clear is quality and cost: a focused context gives better answers and costs less on every step.</p>
+<p>A fresh session needs a <b>brief</b>: a few lines that give the agent what the long session "knew", without the noise.</p>
+<pre><code class="language-markdown">Goal: GBP refunds round wrong.
+Code: services/refunds/
+Note: amounts are in pence,
+  see money.py
+Don't: change the payments
+  schema or gen/ clients
+Done when: make test-refunds
+  passes, with a new test
+  for a half-penny case
+</code></pre>
+
+<h3>Worked example</h3>
+<p>A two-hour Claude Code session compacts. Here is what its docs say comes back:</p>
+<table>
+  <tr><th>Before</th><th>After compaction</th></tr>
+  <tr><td>Project <code>CLAUDE.md</code></td><td>Read again from disk, in full</td></tr>
+  <tr><td>A rule you typed in chat at minute 5</td><td>Only if the summary kept it</td></tr>
+  <tr><td>Your requests, key code</td><td>Kept in the summary</td></tr>
+  <tr><td>Files read or edited</td><td>Up to five, most recent first, read again</td></tr>
+  <tr><td>Old test runs and logs</td><td>Summarised away</td></tr>
+</table>
+<p>So anything that must survive belongs in a file, not in the chat. More on that in <a href="#memory">Agent memory is just files</a>.</p>
+
+<h3>Your turn</h3>
+<predict id="ctx-forgot-rule" minutes="2">
+  <q><p>At the start of a session you told the agent "never edit the generated clients in <code>gen/</code>". Two hours later it edits <code>gen/orders_client.py</code>. What most likely happened, and what is the fix?</p></q>
+  <answer><p><b>The rule was summarised away or buried.</b> It lived only in the conversation. Either a compaction dropped it, or it sat deep in a long context full of other text. Put rules that must last in the project's context file, which is read again from disk after compaction. Better still, make it a check the agent can't skip, such as a permission rule that blocks writes to <code>gen/</code> (see <a href="#hooks-permissions">Hooks and permissions</a>).</p></answer>
+</predict>
+
+<predict id="ctx-clear-or-compact" minutes="2">
+  <q><p>You've just fixed a refund bug. Next you want to add a metrics endpoint to a different service. <code>/clear</code> or <code>/compact</code>?</p></q>
+  <answer><p><b><code>/clear</code>.</b> Nothing from the refund work helps the new task. A compact would keep a summary of it, which you'd pay for on every step and which could distract the agent. It would also cost a big summarising request. Compact when you want to <i>continue the same task</i> with a lighter history. Clear when the task changes.</p></answer>
+</predict>
+
+<predict id="ctx-third-correction" minutes="2">
+  <q><p>You've corrected the agent twice on the same thing ("use the existing retry helper"), and it still gets it wrong. Should you type a third, firmer correction?</p></q>
+  <answer><p><b>No: clear and write a better prompt.</b> Both failed attempts are still in the context, and the model re-reads them on every step. A third correction just adds more of the same. Start fresh with one prompt that includes what you learned: "Use <code>retry.with_backoff</code> from <code>lib/http</code>, not a hand-written loop." Claude Code's own best-practice docs give the same advice.</p></answer>
+</predict>
+
+<predict id="ctx-fresh-brief" minutes="3">
+  <q><p>A colleague says: "Starting fresh is a waste. My two-hour session already knows the whole codebase." Why does a fresh session with a ten-line brief often do better?</p></q>
+  <answer><p><b>The long session also "knows" a lot of wrong things.</b> It holds old versions of edited files, dead-end attempts and huge logs, and models use long, noisy context less reliably. In a 2025 study by Chroma, every model tested answered questions better from a focused prompt of about 300 tokens than from the full 113,000-token history that contained the same facts. A brief keeps the useful part and drops the noise. The agent can re-read any file it needs in seconds.</p></answer>
+</predict>
+
+<predict id="ctx-cleared-result" minutes="3">
+  <q><p>Stretch: your harness clears old tool results once the context passes 100,000 tokens. Later, the agent re-runs a query against the staging database that it ran an hour ago. Is that a bug?</p></q>
+  <hint>What did the agent see where the old result used to be?</hint>
+  <answer><p><b>No, that's the design.</b> The old result was replaced by a placeholder, so the agent ran the tool again to get it back. That is usually cheaper than carrying the old output on every step. It only hurts when the result can't be reproduced, like a one-off production query or data that has changed since. Ask the agent to write findings like that to a notes file, so they live on disk instead of in the context.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>One task per session. When the task changes, run <code>/clear</code> (or your agent's "new session").</li>
+  <li>Start each session with a short brief: goal, where the code is, what not to touch, and how "done" is checked.</li>
+  <li>Move rules out of the chat into the context file, or into checks. If you need to pause a long task, ask the agent to write its progress to a file, then start fresh from that file.</li>
+  <li>After two failed corrections, stop correcting. Clear, and write one better prompt.</li>
+</ul>
+<p><b>If someone asks</b> "why does the agent get worse in long sessions?": "Everything it has read stays in its context, and models use long contexts less reliably than short ones. When it fills up, the harness summarises it and details get lost, so I keep one task per session and start each with a short written brief."</p>
+</atwork>
+
+<fact title="Lost in the middle">
+<p>In July 2023, Nelson Liu and colleagues from Stanford, UC Berkeley and Samaya AI gave models a question plus 20 Wikipedia passages, about 4,000 tokens, where only one passage held the answer. Then they moved that passage around. Accuracy formed a U shape: best when the answer was at the very start or end, worst in the middle. For GPT-3.5-Turbo, with the answer in the middle of 20 or 30 passages, accuracy fell below its score with no passages at all (56.1%). Versions of the models with longer context windows were no better at using what they were given. Models have changed a lot since then, but a 2025 study by Chroma of 18 models, including GPT-4.1, Claude 4 and Gemini 2.5, still found accuracy dropping as inputs grew longer, even on simple tasks.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: context window, best practices; Anthropic API docs: compaction, context editing; Anthropic engineering blog, September 2025; Liu et al., 2023; Chroma, 2025).</p>
+
+<recap><ul>
+  <li>Everything an agent reads stays in its context until removed, and models use long contexts less reliably than short ones.</li>
+  <li>Harnesses make room by clearing old tool results or compacting into a summary. Both lose details, and compaction is itself a big request.</li>
+  <li>One task per session, a short brief at the start, and lasting rules in files or checks, not in the chat.</li>
+</ul></recap>
