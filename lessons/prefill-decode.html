@@ -1,0 +1,109 @@
+<p class="lead">A model reads your whole prompt at once, but writes its answer one token at a time. That one fact explains why a huge prompt can still get a quick reply, why long answers are slow, and why output tokens cost more than input tokens.</p>
+
+<h3>The idea</h3>
+<p>Picture a cook in a huge kitchen. To make anything, they must walk past every shelf in the pantry. Walking is slow; cooking is quick. For a banquet where every dish is already known, one walk is enough: they grab what all the dishes need and cook them side by side. But for a tasting menu where each course depends on how the last one turned out, they must walk the whole pantry again for every course.</p>
+<p>A model on a GPU is that cook. The pantry is the model's <b>weights</b>, its billions of learned numbers, stored in GPU memory. Every step of work has to read all of them. Reading them takes far longer than the maths done with them. So a request has two phases:</p>
+<ol>
+  <li><b>Prefill (reading).</b> The model takes in all the prompt tokens at the same time. One pass over the weights serves thousands of tokens, so the GPU is kept busy and the work goes fast.</li>
+  <li><b>Decode (writing).</b> The model writes one token, adds it to the text, and only then can it write the next, because each token depends on the ones before it. Every new token needs another full pass over the weights.</li>
+  <li><b>Remember as you go.</b> While reading, the model saves notes about every token it has seen, so writing the next token doesn't mean re-reading the whole text. These notes are the <b>KV cache</b>.</li>
+</ol>
+
+<pre class="mermaid" data-alt="One request in two phases. Prefill: all prompt tokens are read in one parallel pass, which builds the KV cache. Decode: the model writes one token, appends it to the KV cache, and repeats until the answer is done. Each loop is one full pass over the model's weights.">
+flowchart TD
+  A["Prompt: 20,000 tokens"] --> B["Prefill<br/>all tokens in one pass"]
+  B --> C["KV cache<br/>notes on every token"]
+  C --> D["Decode: write<br/>1 token"]
+  D --> E["Add its notes<br/>to the KV cache"]
+  E -->|"next token"| D
+  E -->|"done"| F["Answer"]
+  style D stroke-width:3px
+</pre>
+
+<p>The rule to remember: <b>input tokens are read together, output tokens are written in a queue</b>.</p>
+
+<h3>Up close</h3>
+<p><b>Why writing is slow.</b> Google's researchers put the bottleneck plainly: GPUs and TPUs can do hundreds of trillions of operations per second, but can move only trillions of bytes per second from memory, about a hundred times less. Writing one token does only a few operations per byte of weights read, so the chip spends most of its time waiting for memory. NVIDIA describes prefill as "highly parallelized" work that "saturates" the GPU, and decode as work that leaves it underused.</p>
+<p><b>The KV cache in plain words.</b> For each token, at each layer of the model, the model computes a "key" (what this token is about, for others to search) and a "value" (what it has to offer when found). Every new token looks up the keys and values of all the tokens before it. Keeping them in GPU memory means each new token only computes its own. The cache is big: NVIDIA's example, a small 7-billion-parameter model with 4,096 tokens of context, needs about 2 GB of KV cache for one request. This cache is exactly what <a href="#prompt-caching">prompt caching</a> saves between requests.</p>
+<p><b>Two numbers for speed.</b> <b>Time to first token</b> (TTFT) is how long you wait before the reply starts: mostly prefill, plus any time in a queue. <b>Output tokens per second</b> is the decode speed. Total time is roughly TTFT plus output tokens divided by that speed. You can measure both with streaming:</p>
+<pre><code class="language-python">import time
+
+t0 = time.monotonic()
+first = None
+with client.messages.stream(
+    model=MODEL,
+    max_tokens=2000,
+    messages=history,
+) as s:
+    for text in s.text_stream:
+        if first is None:
+            first = time.monotonic()
+    msg = s.get_final_message()
+end = time.monotonic()
+
+n = msg.usage.output_tokens
+print("TTFT s:", first - t0)
+print("tok/s:", n / (end - first))
+</code></pre>
+<p>Providers sell the two separately. Anthropic's fast mode, for example, gives up to 2.5 times more output tokens per second on Claude Opus 5.5 for twice the price, and the docs say the gain is in output speed, not time to first token.</p>
+<p><b>Why output costs more.</b> On Anthropic's price list, output tokens cost 5 times as much as input tokens on every current model. Providers don't publish their costs, but the mechanism points the same way: a pass over the weights during prefill produces thousands of tokens; during decode it produces one per request. Providers batch many users' requests into each decode pass to share the cost, but every request in the batch needs its own KV cache in GPU memory, which limits how many fit.</p>
+
+<h3>Worked example</h3>
+<p>Round numbers for illustration (real speeds depend on the model, the provider and the load): the model reads 20,000 tokens a second and writes 50 a second.</p>
+<table>
+  <tr><th>Request</th><th>Reading</th><th>Writing</th><th>Total</th></tr>
+  <tr><td>100k prompt, 50-token answer</td><td>5 s</td><td>1 s</td><td><b>~6 s</b></td></tr>
+  <tr><td>5k prompt, 5k answer</td><td>0.25 s</td><td>100 s</td><td><b>~100&nbsp;s</b></td></tr>
+  <tr><td>Agent rewrites a 6k-token file</td><td>—</td><td>120 s</td><td><b>~2&nbsp;min</b></td></tr>
+  <tr><td>Agent edits 10 lines (200 tokens)</td><td>—</td><td>4 s</td><td><b>~4 s</b></td></tr>
+</table>
+<p>The request with 20 times more input finishes about 16 times sooner. In an agent, every tool call is output too: the arguments of a "write file" call are the whole file, decoded token by token. So is thinking, which is billed and written as output (see <a href="#thinking-effort">Thinking and effort levels</a>).</p>
+
+<h3>Your turn</h3>
+<predict id="pd-big-prompt-fast" minutes="2">
+  <q><p>Request A sends a 100,000-token prompt (a big chunk of a repo) and gets a 50-token answer. Request B sends 5,000 tokens and gets a 5,000-token answer. Which one finishes first?</p></q>
+  <answer><p><b>A, by a wide margin.</b> A's 100,000 tokens are read in parallel during prefill, which takes seconds. B's 5,000 output tokens are written one after another, each needing a full pass over the weights, which can take a minute or more. For speed, the length of the answer matters far more than the length of the prompt.</p></answer>
+</predict>
+
+<predict id="pd-output-price" minutes="2">
+  <q><p>A colleague asks why Anthropic charges 5 times more for an output token than an input token. "A token is a token." What do you say?</p></q>
+  <answer><p><b>They are different work for the GPU.</b> Input tokens are read together: one pass over the model's weights handles thousands of them. Output tokens are written one at a time, and each one needs its own pass. Batching many users together helps, but each user's KV cache takes GPU memory, so a GPU makes far fewer output tokens per hour than it reads input tokens. Providers don't publish their costs, but that is why the direction makes sense.</p></answer>
+</predict>
+
+<predict id="pd-review-bot" minutes="2">
+  <q><p>Your CI runs an agent that reviews each PR. It writes a long essay on the change and ends with "PASS" or "FAIL". The step takes 90 seconds, and the pipeline only reads the last word. How do you make it much faster?</p></q>
+  <answer><p><b>Ask for less output.</b> Almost all of the 90 seconds is decode: the essay is written one token at a time. Ask for a short verdict first, such as a few lines of JSON with the result and the failing line numbers, and an explanation only when it fails. The input (the diff and context files) can stay the same; it is read quickly.</p></answer>
+</predict>
+
+<predict id="pd-fast-mode" minutes="3">
+  <q><p>In a long agent session, each step waits about 10 seconds before anything appears, then the text streams quickly. Someone suggests paying for a mode that doubles output tokens per second. Will it fix the wait?</p></q>
+  <hint>Which phase happens before the first token?</hint>
+  <answer><p><b>Mostly no.</b> The wait before the first token is prefill (plus any queue): the model reading the whole long conversation. Faster decode only speeds up the part that already feels quick. To cut the wait, shrink or reuse the input: make sure prompt caching is working, so the unchanged start isn't re-read, and keep huge tool results out of the context.</p></answer>
+</predict>
+
+<predict id="pd-parallel-agents" minutes="3">
+  <q><p>Stretch: one agent must write four independent 2,000-token test files. It takes about 3 minutes. You split the job across four subagents running at the same time. Roughly how long now, and why?</p></q>
+  <hint>Is the limit the GPU's total work, or the queue inside one request?</hint>
+  <answer><p><b>Closer to 45 seconds than 3 minutes.</b> Decode is a queue inside each request: one request can't write token 2 before token 1. But the provider runs many requests side by side in the same batch, so four requests each write their own queue in parallel. You pay the same number of output tokens; you just stop waiting for them in a line. Rate limits on output tokens per minute are the usual ceiling.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>When speed matters, ask for short outputs: an edit or a diff, not the whole file; a verdict, not an essay. Check that your agent uses its edit tool for small changes.</li>
+  <li>When a step feels slow, tell the two phases apart: a long wait before text appears is reading (shrink or cache the input); slow streaming is writing (ask for less output, or use a faster model).</li>
+  <li>Split long, independent writing jobs across parallel agents instead of one long answer.</li>
+</ul>
+<p><b>If someone asks</b> "why is the agent so slow when the model is so fast?": "Models read the whole prompt at once but write one token at a time, so it's the length of the answer that costs time. Asking for diffs instead of whole files often makes it several times faster."</p>
+</atwork>
+
+<fact title="Guess first, check in one go">
+<p>In November 2022, Yaniv Leviathan, Matan Kalman and Yossi Matias at Google published "Fast Inference from Transformers via Speculative Decoding" (ICML 2023). The idea borrows from CPUs, which guess which way a branch will go and do the work early. A small, fast model drafts the next few tokens. The big model then checks all of them in one pass, the way it reads a prompt, keeps the drafted tokens it agrees with up to the first one it rejects, and writes that one itself. Many tokens are easy (copying a name from earlier in the text), so the draft is often right. Their 11-billion-parameter T5 model, helped by a 60-million-parameter one, ran 2 to 3 times faster, with exactly the same outputs as before. DeepMind published the same idea independently in February 2023, speeding up its 70-billion-parameter Chinchilla by 2 to 2.5 times. Google says it now uses the technique in AI Overviews in Search.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Anthropic API docs: pricing, fast mode, reducing latency; NVIDIA's LLM inference optimisation guide; Leviathan et al., ICML 2023; Chen et al., DeepMind, 2023; Google Research blog, 2024).</p>
+
+<recap><ul>
+  <li>Prefill reads the whole prompt in parallel; decode writes one token at a time, each needing a full pass over the weights.</li>
+  <li>Time to first token is mostly reading; output tokens per second is writing. Long answers, not long prompts, make requests slow.</li>
+  <li>Output costs more because it uses the GPU far less efficiently. Ask agents for diffs and verdicts, not whole files and essays.</li>
+</ul></recap>
