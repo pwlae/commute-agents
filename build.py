@@ -5,7 +5,8 @@ Usage:  python3 build.py
 
 Needs: Python 3.10+, Pygments (pip install pygments), and for diagrams
 Node + `npm install` (mermaid-cli). Diagrams are cached in diagrams/ by hash,
-so only new or changed diagrams are rendered.
+so only new or changed diagrams are rendered. A diagram wider than 450px fails
+the build before it is cached, and unused cached diagrams are deleted.
 
 Lesson files use a few custom tags that this script expands (see CLAUDE.md):
   <pre><code class="language-python">...</code></pre>   -> highlighted code
@@ -39,6 +40,8 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent
 LESSONS = ROOT / "lessons"
 DIAGRAMS = ROOT / "diagrams"
+DIAGRAM_NAME = re.compile(r"[0-9a-f]{12}\.svg")  # <sha1[:12]>.svg, see Diagrams.render
+MAX_DIAGRAM_WIDTH = 450  # px, so diagrams fit a phone without scaling down
 TOOLS = ROOT / "tools"
 LONG_CODE_LINES = 12  # code blocks longer than this get class "long" (split on print)
 class BuildError(Exception):
@@ -107,17 +110,24 @@ class Diagrams:
         self.rendered = 0
         DIAGRAMS.mkdir(exist_ok=True)
 
-    def render(self, source, alt):
+    def render(self, source, alt, n):
         source = html.unescape(source).strip("\n")
         if not alt:
             raise BuildError("every <pre class=\"mermaid\"> needs data-alt=\"...\" (text for screen readers)")
         key = hashlib.sha1((self.cfg + source).encode()).hexdigest()[:12]
         out = DIAGRAMS / f"{key}.svg"
+        svg = out.read_text() if out.exists() else self._mmdc(source)
+        w, h = svg_size(svg)
+        if w > MAX_DIAGRAM_WIDTH:
+            first = source.splitlines()[0] if source else ""
+            raise BuildError(
+                f"diagram {n} ({first!r}, data-alt=\"{alt}\") is {w}px wide, the limit is {MAX_DIAGRAM_WIDTH}px. "
+                "Try a single vertical chain (flowchart TD with one path): Mermaid lays out "
+                "several branches side by side. Nothing was saved in diagrams/.")
         if not out.exists():
-            self._mmdc(source, out)
+            out.write_text(svg)
             self.rendered += 1
         self.used.add(out.name)
-        w, h = svg_size(out)
         src = f"diagrams/{out.name}"
         return (
             f'<figure class="diagram"><a href="{src}" target="_blank" rel="noopener" title="Open full size">'
@@ -125,7 +135,8 @@ class Diagrams:
             f"</figure>"
         )
 
-    def _mmdc(self, source, out):
+    def _mmdc(self, source):
+        """Render with mermaid-cli in a temp dir and return the SVG text (nothing is written to diagrams/)."""
         mmdc = ROOT / "node_modules" / ".bin" / "mmdc"
         if not mmdc.exists():
             raise BuildError("mermaid-cli is missing. Run: PUPPETEER_SKIP_DOWNLOAD=1 npm install")
@@ -144,16 +155,18 @@ class Diagrams:
             )
             if r.returncode != 0 or not tmp_out.exists():
                 raise BuildError(f"mermaid failed for diagram:\n{source}\n{r.stderr[-1500:]}")
-            out.write_text(tmp_out.read_text())
+            return tmp_out.read_text()
 
     def prune(self):
-        for f in DIAGRAMS.glob("*.svg"):
-            if f.name not in self.used:
+        """Delete cached diagrams no lesson uses any more. Call only after every lesson is built."""
+        for f in sorted(DIAGRAMS.glob("*.svg")):
+            if DIAGRAM_NAME.fullmatch(f.name) and f.name not in self.used:
                 f.unlink()
+                print(f"removed unused diagrams/{f.name}")
 
 
-def svg_size(path):
-    head = path.read_text()[:3000]
+def svg_size(svg):
+    head = svg[:3000]
     m = re.search(r'viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"', head)
     if not m:
         return 600, 300
@@ -161,9 +174,13 @@ def svg_size(path):
 
 
 def expand_mermaid(text, diagrams):
+    n = 0
+
     def repl(m):
+        nonlocal n
+        n += 1
         a = attrs(m.group(1))
-        return diagrams.render(m.group(2), a.get("data-alt", ""))
+        return diagrams.render(m.group(2), a.get("data-alt", ""), n)
 
     return re.sub(r'<pre class="mermaid"([^>]*)>(.*?)</pre>', repl, text, flags=re.S)
 
