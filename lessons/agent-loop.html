@@ -1,0 +1,147 @@
+<p class="lead">A model can only write text. An agent is that model inside an ordinary program, a while loop, that runs the tools the model asks for and feeds the results back until the model says it is done. Once you see the loop, "agents", "harnesses" and "agent factories" stop being mysterious.</p>
+
+<h3>The idea</h3>
+<p>Picture a senior engineer on a phone call, helping a junior who sits at the keyboard. The senior can't touch the machine. They say "run the tests", the junior runs them and reads out the output, the senior says "open <code>orders.py</code>, line 40", and so on, until the senior says "done, that's the fix". The senior does all the thinking. The junior does all the doing.</p>
+<p>The model is the senior. The program around it, called the <b>harness</b>, is the junior. Claude Code, Codex CLI and the script you might write tonight are all harnesses around a model. Each step goes like this:</p>
+<ol>
+  <li><b>Ask.</b> The harness sends the model the task, the list of tools it may use, and everything that has happened so far.</li>
+  <li><b>Decide.</b> The model replies with text, or with a <b>tool call</b>: a small structured request such as "run the command <code>pytest -x</code>". Writing that request is all the model does.</li>
+  <li><b>Act.</b> The harness, ordinary code on your machine, checks the request and runs it.</li>
+  <li><b>Feed back.</b> The harness adds the output to the conversation as a <b>tool result</b> and goes back to step 1.</li>
+  <li><b>Stop.</b> When the model replies with text and no tool call, the loop ends. That text is the agent's final answer.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The agent loop. The harness sends the task, tools and history to the model. If the model replies with a tool call, the harness runs the tool on your machine, adds the result to the history and calls the model again. If the model replies with text only, the loop ends with the final answer.">
+flowchart TD
+  A["Task + tools<br/>+ history so far"] --> B["Model call<br/>(over the API)"]
+  B --> C{"Tool call<br/>in the reply?"}
+  C -- yes --> D["Harness runs<br/>the tool locally"]
+  D --> E["Result added<br/>to the history"]
+  E --> B
+  C -- no --> F["Final answer:<br/>loop ends"]
+  style D stroke-width:3px
+</pre>
+
+<p>Notice who does what. The model sits in a data centre and never touches your laptop. Everything that happens to your files, your shell and your network is done by the harness. That is why permissions, sandboxes and approval prompts all live in the harness, not in the model.</p>
+
+<h3>Up close</h3>
+<p>Here is a complete, working agent with one tool, a shell, using Anthropic's Python SDK. First the tool description the model will see:</p>
+<pre><code class="language-python">import subprocess
+import anthropic
+
+client = anthropic.Anthropic()
+SHELL = {
+    "name": "shell",
+    "description": (
+        "Run a shell command and"
+        " return its output"),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "cmd": {"type": "string"},
+        },
+        "required": ["cmd"],
+    },
+}
+
+def run(cmd):
+    p = subprocess.run(
+        cmd, shell=True, text=True,
+        capture_output=True)
+    return p.stdout + p.stderr
+</code></pre>
+<p>And the agent itself, the whole loop:</p>
+<pre><code class="language-python">msgs = [{"role": "user",
+         "content": TASK}]
+while True:
+    r = client.messages.create(
+        model=MODEL, max_tokens=16000,
+        tools=[SHELL], messages=msgs)
+    msgs.append({"role": "assistant",
+                 "content": r.content})
+    if r.stop_reason != "tool_use":
+        break  # text only: done
+    results = []
+    for b in r.content:
+        if b.type == "tool_use":
+            out = run(b.input["cmd"])
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": b.id,
+                "content": out,
+            })
+    msgs.append({"role": "user",
+                 "content": results})
+for b in r.content:
+    if b.type == "text":
+        print(b.text)
+</code></pre>
+<p>Three details carry the whole mechanism:</p>
+<ul>
+  <li><b><code>stop_reason</code></b> says why the model stopped writing. <code>tool_use</code> means "I'm asking for a tool, run it and come back". <code>end_turn</code> means "I'm finished". There are a few others, such as <code>max_tokens</code> (the reply hit its length limit), and a real harness handles each one. This toy treats them all as "done".</li>
+  <li><b>A <code>tool_use</code> block</b> has an <code>id</code>, the tool's <code>name</code> and an <code>input</code> object that follows the tool's schema. The model wrote that JSON. Nothing has run yet.</li>
+  <li><b>A <code>tool_result</code> block</b> goes back in a <code>user</code> message, with the same id, so the model knows which call it answers. To the model, the result is just more text in its context.</li>
+</ul>
+<p>And notice <code>msgs</code>: it only grows. Every pass sends the whole list again, which is why long sessions get expensive (<a href="#tokens">Tokens and the context window</a>) and why <a href="#prompt-caching">prompt caching</a> matters so much for agents.</p>
+<p>A production harness is this same loop with a lot of care added: a dozen well-described tools, permission checks before each one, limits on turns and spend, output trimming, summarising old history when the window fills up, and a terminal UI. Anthropic's Agent SDK docs describe Claude Code's core in exactly these terms: the model calls tools, gets the results, and repeats until it produces a response with no tool calls. Codex CLI is open source (Apache-2.0), so you can read its loop yourself.</p>
+<p>One honest exception: some APIs offer <b>server tools</b>, such as web search, that the provider runs on its own machines. It is the same loop, just with the "act" step in someone else's data centre.</p>
+
+<h3>Worked example</h3>
+<p>You give the agent above the task "the test <code>test_refund</code> fails, fix it". A typical run:</p>
+<table>
+  <tr><th>Pass</th><th>Model replies</th><th>Harness does</th></tr>
+  <tr><td>1</td><td>tool call: <code>pytest -x</code></td><td>runs it, returns 1 failure</td></tr>
+  <tr><td>2</td><td>tool call: <code>sed -n 30,60p refunds.py</code></td><td>returns 31 lines</td></tr>
+  <tr><td>3</td><td>tool call: a <code>sed -i</code> edit</td><td>edits the file</td></tr>
+  <tr><td>4</td><td>tool call: <code>pytest -x</code></td><td>runs it, all pass</td></tr>
+  <tr><td>5</td><td>text: "Fixed: the refund used the wrong currency"</td><td>loop ends</td></tr>
+</table>
+<p>Five model calls, four commands, one final answer. Pass 5 sent everything from passes 1–4 again. The "agent" decided which commands to run; your laptop ran them.</p>
+
+<h3>Your turn</h3>
+<predict id="loop-who-runs-rm" minutes="2">
+  <q><p>Your coding agent runs <code>rm -rf build/</code> to clean up before a rebuild. Who actually deleted the folder: the model or the harness?</p></q>
+  <answer><p><b>The harness.</b> The model only wrote a request: a <code>tool_use</code> block saying "run <code>rm -rf build/</code>". The harness, a program on your laptop running as your user, decided to run it and did. So the harness is where you stop dangerous commands: permission prompts, allow and deny lists, sandboxes. A line in the prompt saying "never delete things" is only a request to the model.</p></answer>
+</predict>
+
+<predict id="loop-stops-early" minutes="2">
+  <q><p>Halfway through a task, the agent writes "Next, I'll run the integration tests and fix any failures." Then nothing happens. It just waits for you. Why?</p></q>
+  <answer><p><b>It replied with text, not a tool call.</b> To the loop, a reply with no tool call means "done" (<code>stop_reason</code> is <code>end_turn</code>), so it exits and hands control back to you. Describing an action is not taking one. Type "go ahead" and the loop starts again. Harnesses can also add a check that runs when the agent tries to stop, such as "are the tests green?", and send it back to work if not (see <a href="#hooks-permissions">Hooks and permissions</a>).</p></answer>
+</predict>
+
+<predict id="loop-error-result" minutes="2">
+  <q><p>The agent runs a migration script and it crashes with a stack trace. The agent reads the trace, fixes a typo and runs it again. What part of the loop made that "self-correction" possible?</p></q>
+  <answer><p><b>The error went back as an ordinary tool result.</b> The harness doesn't stop on a failing command. It returns the output, stack trace and all, as text in the next request. The model reads it like any other result and picks the next action. Nothing special happens: a failed command is just more context. That is also why clear, short error messages help agents as much as they help people.</p></answer>
+</predict>
+
+<predict id="loop-step-cost" minutes="3">
+  <q><p>Early in a session, each step costs a fraction of a cent. Forty steps later, a step that only runs <code>ls</code> costs many times more. The command didn't change. What did?</p></q>
+  <answer><p><b>The history it sends.</b> Every pass of the loop sends the whole conversation again: every file read, every test run, every log. By step 40 that can be tens of thousands of tokens, even if the new part is one short command. Caching makes the repeated part cheaper but not free. Keep tool outputs small, and start a fresh session for a new task.</p></answer>
+</predict>
+
+<predict id="loop-factory" minutes="3">
+  <q><p>Stretch: a vendor demos an "agent factory" that works through 50 tickets overnight and opens 50 pull requests. Without seeing their code, what is most likely underneath?</p></q>
+  <hint>How many loops are running, and what started each one?</hint>
+  <answer><p><b>An ordinary script that starts the same loop 50 times.</b> Something (a cron job, a CI pipeline, or another agent) reads the ticket list and launches a harness per ticket, each with its own prompt and its own copy of the code (a git worktree or a container), so they don't trample each other. The interesting questions are not "what's the AI?" but: which loop runs, who starts it, what tools and permissions does each run get, and how is its work checked before merge?</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>When the agent stops halfway, read its last message. If it describes a next step instead of doing it, it ended the loop. Say "continue", or make the task end with a check it must pass ("done means the tests pass").</li>
+  <li>Put safety in the harness, not the prompt: review your agent's permission settings and which commands it may run without asking.</li>
+  <li>When someone says "agent factory" or "autonomous agents", ask two questions: which loop runs, and who or what starts it? The answer is usually a harness you already know, started by a script, a schedule or CI.</li>
+</ul>
+<p><b>If someone asks</b> "what actually is an AI agent?": "It's a while loop. The model suggests the next action as a tool call, ordinary code runs it and feeds back the result, and it repeats until the model answers in plain text."</p>
+</atwork>
+
+<fact title="The loop is older than tool calls">
+<p>In October 2022, about two months before ChatGPT launched, Shunyu Yao of Princeton and colleagues at Google Research posted a paper called ReAct, short for "reasoning and acting". They prompted a large model with a few hand-written examples in a fixed format: <i>Thought</i>, <i>Action</i>, <i>Observation</i>, repeated. For question answering the model had three actions on Wikipedia: <code>search[entity]</code>, <code>lookup[string]</code> (like Ctrl+F) and <code>finish[answer]</code>. Ordinary code ran each action and pasted the result back as the next Observation. That is the loop in this lesson, built months before model APIs had a tool-call feature at all (OpenAI added function calling in June 2023). On two interactive benchmarks, ReAct beat imitation and reinforcement learning methods by 34 and 10 percentage points of success rate, with only one or two examples in the prompt.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Anthropic API docs: tool use and stop reasons; Claude Agent SDK docs; Codex CLI repository; Yao et al., ICLR 2023; OpenAI, June 2023).</p>
+
+<recap><ul>
+  <li>An agent is a loop: the model asks for a tool, the harness runs it and adds the result, repeat until the model answers in text.</li>
+  <li>The model only writes requests. The harness, ordinary code on your machine, does everything, so safety belongs there.</li>
+  <li>Every pass resends the whole history. "Factories" are the same loop, started many times by a script, a schedule or CI.</li>
+</ul></recap>
