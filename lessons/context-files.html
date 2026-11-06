@@ -1,0 +1,150 @@
+<p class="lead">A context file (<code>CLAUDE.md</code>, <code>AGENTS.md</code>) is read on every request of every session, so each line has to pay for itself. Keep the few things the agent can't learn from the code: the exact commands, the traps, and your team's decisions. Leave out everything the code already says.</p>
+
+<h3>The idea</h3>
+<p>Picture handing over your on-call week to a strong engineer from another team. You don't explain how Kafka works or list every folder. They can read the code. You write the things that bite: "the refunds dashboard lags 10 minutes, don't trust it", "restart the consumer before the API", "never replay the payments topic". Half a page, and every line saves them an hour.</p>
+<p>A good context file is that handover note. <a href="#memory">Agent memory is just files</a> showed how it loads: always, near the start, in every session. This lesson is about what to write in it. Claude Code's best-practices guide puts the rule in one line: "Only write down what Claude can't find by reading the repo, or what it would otherwise spend time rediscovering every session." Before you add a line, ask two questions:</p>
+<ol>
+  <li><b>Could the agent find this by reading the code?</b> Folder layout, frameworks, dependencies, how existing handlers look: yes, and faster than you could explain.</li>
+  <li><b>Would it actually go and look?</b> The integration tests need an env variable: maybe it wouldn't look until three runs have failed.</li>
+</ol>
+<p>If both answers are yes, leave it out. What survives the filter is short:</p>
+
+<pre class="mermaid" data-alt="A funnel from top to bottom. Start with everything you know about the repository. Remove what the code already says, such as the folder layout and dependencies. Move rules that matter for one area into a subfolder file or a path-scoped rule. Move rules that must never break into a check. What remains goes in the root context file: commands, traps and team decisions.">
+flowchart TD
+  A["Everything you know<br/>about the repo"] --> B["minus what the code says:<br/>layout, deps, framework"]
+  B --> C["minus one-area rules:<br/>to a subfolder file"]
+  C --> D["minus must-never-break:<br/>to a check"]
+  D --> E["Root file: commands,<br/>traps, decisions"]
+  style E stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p>Claude Code's guide lists four kinds of line that pass the test. The agents.md site suggests similar sections (build and test commands, code style, testing, security) plus a project overview; keep that to a sentence.</p>
+<table>
+  <tr><th>Keep</th><th>Leave out</th></tr>
+  <tr><td>Exact commands: build, all checks, <b>one</b> test file</td><td>Folder tree and architecture tour</td></tr>
+  <tr><td>Places where the code misleads: a legacy pattern new code must not copy, a folder that looks dead but isn't</td><td>Dependency lists, framework names</td></tr>
+  <tr><td>Decisions that live in people's heads: which client library, what needs a migration review</td><td>Style rules your linter already enforces (give the lint command)</td></tr>
+  <tr><td>Anything you've corrected twice</td><td>"Write clean code", "be careful"</td></tr>
+</table>
+<p>Here is a context file for a service in a distributed system. It is about 35 lines, and nearly every line is something a new joiner gets wrong:</p>
+<pre><code class="language-markdown"># orders: order service (Go)
+
+## Commands
+- Start Postgres + Kafka: make deps
+- All checks, same as CI: make check
+- One test:
+  go test ./saga -run TestRefund
+- Integration tests need KAFKA_URL,
+  see .env.example
+
+## Traps
+- Money is int64 minor units.
+  Never float.
+- Calls to other services go through
+  internal/client (retries, circuit
+  breaker). No raw net/http.
+- Kafka can deliver an event twice.
+  New consumers dedupe on event_id
+  with internal/inbox. Old consumers
+  don't; don't copy them.
+- Migrations: add a new file in
+  db/migrations, never edit an old
+  one. Expand first, contract later.
+- internal/legacy looks dead. It
+  isn't: the v1 API still uses it.
+- Event schemas live in the
+  contracts repo, not here.
+
+## Read when the task needs it
+- Saga steps and compensations:
+  docs/saga.md
+- Release and rollback:
+  docs/runbook.md
+</code></pre>
+<p>Note what's missing: no folder list, no "we use Go modules", no description of the saga. The last section names deeper docs without importing them, so they cost nothing until a task needs them. The commands are exact, because the agent will run them to check its own work.</p>
+
+<h3>One per repo, plus one per task</h3>
+<ul>
+  <li><b>The repository's file</b> is shared. Commit it and review changes to it in pull requests, like code.</li>
+  <li><b>A subfolder file or path-scoped rule</b> holds what matters in one area, such as the payments module.</li>
+  <li><b>A task brief</b> holds this ticket's goal, the repos it touches and what "done" means. It lives in the task's own folder (see <a href="#task-workspace">One folder per task</a>) and is deleted with it. Today's plan in the shared file is stale the day the PR merges.</li>
+  <li><b>Your personal habits</b> go in your own file (<code>~/.claude/CLAUDE.md</code>, or <code>CLAUDE.local.md</code>, git-ignored), not in the team's.</li>
+</ul>
+
+<h3>What the research says</h3>
+<p>In February 2026, researchers at ETH Zurich (Gloaguen et al., "Evaluating AGENTS.md") ran Claude Code, Codex and Qwen Code on SWE-bench and on 138 new tasks from 12 Python repositories that have context files written by their developers. The developers' files raised the success rate by about 2.4% on average, not statistically significant. Files generated by an agent lowered it slightly (0.5–2%). Both kinds made runs cost more, by around 20%, because the agents obeyed them: more tests, more files read. Repository overviews didn't help the agents find the right files any faster. But when a file named a specific tool, such as the <code>uv</code> package manager, agents used it about 1.6 times per task, against almost never without the mention.</p>
+<p>A smaller study (Lulla et al., January 2026: 10 repositories, 124 pull requests) found that with an <code>AGENTS.md</code>, median runtime fell by 29% and output tokens by 17%, with similar task completion.</p>
+<p>So a context file is a steering wheel, not a booster. The agent does what it says, so a tour of the repo buys cost and no accuracy, and a precise line about a tool or a trap changes behaviour.</p>
+
+<h3>Worked example</h3>
+<p>Someone generated a 420-line file a year ago. Here is a trim, line by line:</p>
+<table>
+  <tr><th>Section</th><th>Before</th><th>After</th></tr>
+  <tr><td>Folder tree with comments</td><td>140</td><td>0</td></tr>
+  <tr><td>Architecture overview</td><td>90</td><td>1 (a link)</td></tr>
+  <tr><td>Dependencies and versions</td><td>60</td><td>0</td></tr>
+  <tr><td>Style rules the linter checks</td><td>80</td><td>1 (the command)</td></tr>
+  <tr><td>Commands</td><td>20</td><td>6, each run to check it works</td></tr>
+  <tr><td>Traps and decisions</td><td>30</td><td>18</td></tr>
+  <tr><td><b>Total</b></td><td><b>420</b></td><td><b>26</b></td></tr>
+</table>
+<p>The traps survive almost whole, because they are the part the agent can't rebuild. Claude Code's <code>/init</code> and its <code>/doctor</code> checkup work the same way: generate a draft, then cut layouts, dependency lists and overviews, and keep the pitfalls.</p>
+
+<h3>At your laptop</h3>
+<p>Rewrite one repository's context file to under 100 lines. Start by asking the agent to sort it, without editing:</p>
+<pre><code class="language-text">Read CLAUDE.md. Label each line:
+KEEP, CUT (the repo already says
+it), MOVE (one area only) or CHECK
+(must never break). Don't edit yet.
+</code></pre>
+<p>Read its labels; you know the history it doesn't. Run every command you keep. Then start a fresh session and ask: "How do I run one test, and what must I never do in this repo?" If the answer is right, open a PR so the team reviews the new file.</p>
+
+<h3>Your turn</h3>
+<predict id="cf-folder-tour" minutes="2">
+  <q><p>Your <code>AGENTS.md</code> opens with 150 lines describing every folder and what each package does. A teammate says it "helps the agent find its way". Keep it?</p></q>
+  <answer><p><b>Cut it.</b> The agent reads the repository itself, quickly, and in the ETH Zurich study overviews didn't help agents find the right files any faster, while adding cost. A tour also goes stale the first time someone renames a folder, and the agent trusts the file over the code. Keep only the folders that mislead, like "internal/legacy looks dead but isn't".</p></answer>
+</predict>
+
+<predict id="cf-inbox-pattern" minutes="2">
+  <q><p>The agent adds a Kafka consumer by copying an existing one. Tests pass. You reject the PR: the team decided last year that new consumers dedupe through the inbox table, but the six old consumers predate that decision. What should change so this doesn't happen again?</p></q>
+  <answer><p><b>Add one line to the context file.</b> This is the classic case: the code misleads, because most examples show the old way, and the decision lives in people's heads. Something like "New consumers dedupe on event_id with internal/inbox. Old ones don't; don't copy them." If a missing dedupe would really hurt, also add a check that fails on it (see <a href="#unwritten-rules">Turn unwritten rules into checks</a>).</p></answer>
+</predict>
+
+<predict id="cf-caps-repeat" minutes="2">
+  <q><p>Line 400 of a 600-line <code>CLAUDE.md</code> says "amounts are integers in minor units". The agent keeps writing floats. A teammate rewrites it as "IMPORTANT: NEVER USE FLOATS!!!" and copies it to the top. Next week the agent refuses to use a float for a latency metric. What went wrong?</p></q>
+  <answer><p><b>The fix treated the wrong problem.</b> The rule was lost because the file is long, not because it was too polite. Claude Code's docs say heavy emphasis mostly makes the model over-apply a rule, which is what happened. Trim the file so the plain rule stands out, scope it to money ("amounts are int64 minor units"), and, since money must never be a float, make it a check.</p></answer>
+</predict>
+
+<predict id="cf-task-plan" minutes="2">
+  <q><p>To keep context between sessions, you write your ticket's plan into the repo's <code>CLAUDE.md</code>: "Migrating orders to the new ledger. Step 2 done, step 3 next." Two weeks later a colleague's agent, fixing an unrelated bug, starts "step 3". Why?</p></q>
+  <answer><p><b>Task notes went into the shared, always-loaded file.</b> Everyone's agent reads it in every session, and it believes it. A plan belongs in the task's brief, in the task's own folder, and it goes away when the task is done. The repo file should only hold what stays true for every task.</p></answer>
+</predict>
+
+<predict id="cf-generated-file" minutes="3">
+  <q><p>Stretch: a team asks an agent to write <code>AGENTS.md</code> for each of its 30 repos, and commits the 300-line results unread. A month later runs are slower and cost more, but merge rates haven't moved. Is that surprising?</p></q>
+  <hint>What does a generated file mostly contain, and what does the agent do with it?</hint>
+  <answer><p><b>No, it matches the research.</b> A generated file mostly restates what the agent could read anyway: layout, stack, overview. In the ETH Zurich study such files didn't improve success and raised cost by about 20%, because agents followed them and did more exploring and testing. Use the draft as a starting point: cut it to the commands and the traps only the team knows, and measure before and after.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Ask the last two people who joined: "What three things did you get wrong in your first month?" Add the ones the code doesn't make obvious.</li>
+  <li>Run every command in your context file. Fix or delete the ones that fail.</li>
+  <li>When you correct the agent for the same thing twice, add one line, or a check if it must never happen.</li>
+  <li>Delete one section the agent could rebuild from the code: the folder tree is the usual first cut.</li>
+</ul>
+<p><b>If someone asks</b> "should we add an AGENTS.md to every repo?": "Yes, but short and written by people who know the traps. Studies in 2026 found long generated files make agents slower and pricier without making them more accurate, so we only write what the code can't tell the agent: exact commands, traps and team decisions."</p>
+</atwork>
+
+<fact title="One letter and a domain name">
+<p>On 7 May 2025, the coding agent Amp started reading a file called <code>AGENT.md</code> at the root of a project. Its team proposed the name as a shared standard, to stop "the proliferation of agent-specific files" (by then a repository could hold <code>.cursorrules</code>, <code>.windsurfrules</code>, <code>.clinerules</code>, <code>CLAUDE.md</code> and <code>.github/copilot-instructions.md</code>). OpenAI's Codex, meanwhile, used the plural, <code>AGENTS.md</code>. Amp's team said they'd rather have one standard than their own name, on one condition: "if OpenAI can get the agents.md domain, we'll switch." On 20 August 2025 they announced the condition was met and switched, while still reading old <code>AGENT.md</code> files. The agents.md site credits Codex, Amp, Google's Jules, Cursor and Factory. By December 2025, when the format moved to the Linux Foundation, more than 60,000 open-source projects used it.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: best practices, memory; agents.md; OpenAI Codex docs: AGENTS.md; Gloaguen et al., arXiv 2602.11988, 2026; Lulla et al., arXiv 2601.20404, 2026; Amp news, May and August 2025; Linux Foundation, December 2025).</p>
+
+<recap><ul>
+  <li>Every line loads on every request. Write only what the agent can't find in the code, or wouldn't look for.</li>
+  <li>Keep exact commands, places where the code misleads, and team decisions. Cut tours, dependency lists and style the linter checks.</li>
+  <li>One short file per repo, area rules in subfolders, a brief per task. Rules that must never break become checks.</li>
+</ul></recap>
