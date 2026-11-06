@@ -1,0 +1,135 @@
+<p class="lead">Skills, MCP servers and plugins look like three different features, but underneath they all do the same thing: they put text in the model's context. The trick that makes them scale is loading only a short description up front and the rest when needed, and that is exactly why a bad description, or 30 servers you never use, makes your agent worse.</p>
+
+<h3>The idea</h3>
+<p>Picture the shelf of runbooks in an on-call room. Nobody reads them all at the start of a shift. You read the spines, and when the payments alert fires, you pull out the payments runbook and read that one. A shelf of 200 runbooks is fine, as long as the spines are short and say clearly what is inside. A runbook with a spine that says "Misc" never gets opened.</p>
+<p>An agent harness treats skills and tools the same way. This is called <b>progressive disclosure</b>: load information in stages, as the task needs it.</p>
+<ol>
+  <li><b>Always loaded: the spines.</b> Each skill's name and description, and (with tool search on) the names of MCP tools. These are in every request, so they must be short.</li>
+  <li><b>Loaded when the task matches: the book.</b> The model decides from the description alone that a skill fits, and the harness adds the skill's full text to the conversation. A tool's full schema is loaded the same way, the first time the model searches for it.</li>
+  <li><b>Read only if needed: the appendix.</b> A skill can point at reference files and scripts. The model reads a file only when the skill tells it to, and when it runs a script, only the output enters the context.</li>
+</ol>
+
+<pre class="mermaid" data-alt="Three stages of progressive disclosure, top to bottom. Always in context: skill names and descriptions, and MCP tool names. When the task matches, the full skill text or the tool's full schema loads. If the skill points there, reference files and script output load as needed.">
+flowchart TD
+  A["Always in context:<br/>skill descriptions,<br/>MCP tool names"] -- "task matches" --> B["Loaded on use:<br/>full skill text,<br/>full tool schema"]
+  B -- "skill points there" --> C["Read as needed:<br/>reference files,<br/>script output"]
+  style A stroke-width:3px
+</pre>
+
+<p>The bold box is the same expensive box as in <a href="#memory">Agent memory is just files</a>: it rides along in every request. The difference is that a 2,000-line <code>CLAUDE.md</code> sits there in full, while a 2,000-line skill costs one line until it is used.</p>
+
+<h3>Up close: skills</h3>
+<p>A skill is a folder with a <code>SKILL.md</code> file. The top of the file, between the <code>---</code> lines, is the frontmatter. Only that part is always loaded:</p>
+<pre><code class="language-markdown">---
+name: payments-client
+description: >-
+  How to call payment providers from
+  our services: use lib/psp, which
+  has retries, rate limits and
+  circuit breaking. Use when adding
+  or changing a payment integration.
+---
+1. Create a client with psp.connect().
+2. Never write raw HTTP calls.
+Error codes: see reference.md.
+</code></pre>
+<p>What happens underneath, in Claude Code:</p>
+<ul>
+  <li><b>The listing.</b> At session start, every skill's name and description go into the context, so the model knows what exists. Anthropic's docs put this at about 100 tokens per skill.</li>
+  <li><b>The match.</b> The model itself decides. It reads your request, compares it with the descriptions, and if one fits, it calls a Skill tool, like any other tool call (on Claude's API it reads the file with a shell command instead). So the description is the whole interface, exactly like a tool description in <a href="#tool-calls">Tool calls up close</a>.</li>
+  <li><b>The load.</b> The skill's body enters the conversation as one message and stays there. You can also run it yourself with <code>/payments-client</code>.</li>
+  <li><b>The budget.</b> The listing has a cap of about 1% of the context window. Install too many skills and Claude Code starts dropping descriptions, starting with the skills you use least, so those show up as a bare name.</li>
+</ul>
+<p>The same <code>SKILL.md</code> format works in Claude's API and apps, and it is published as an open standard (agentskills.io) that other agents read too.</p>
+
+<h3>Up close: MCP</h3>
+<p>MCP, the Model Context Protocol, is not a feature of the model. The model never speaks MCP. It is a protocol between your <b>harness</b> and a separate program, the <b>MCP server</b>, that offers tools (it can also offer readable data, called resources, and prompt templates). Messages are JSON-RPC 2.0, sent one of two ways:</p>
+<ul>
+  <li><b>stdio</b>: the harness starts the server as a child process on your machine and writes one JSON message per line to its standard input. The server is local code running with your user's rights.</li>
+  <li><b>Streamable HTTP</b>: each message is an HTTP POST to one endpoint on a remote server.</li>
+</ul>
+<p>The harness asks each server for its tools (<code>tools/list</code>), turns every one into an ordinary tool definition (name, description, schema), and puts them in the prompt. Claude Code prefixes the names, like <code>mcp__jira__create_issue</code>, so two servers can't clash. When the model calls one, the harness forwards it:</p>
+<pre><code class="language-json">{"jsonrpc": "2.0", "id": 7,
+ "method": "tools/call",
+ "params": {
+   "name": "logs_search",
+   "arguments": {
+     "service": "orders",
+     "minutes": 30}}}
+</code></pre>
+<p>The result comes back as text and becomes a normal <code>tool_result</code>. So an MCP tool is just a tool whose code lives in another process, and everything from the last lesson applies: the description is all the model knows, and big results stay in the context.</p>
+<pre class="mermaid" data-alt="The model writes a tool call. The harness, acting as an MCP client, forwards it as a JSON-RPC tools/call message to an MCP server, either a local process over stdio or a remote server over HTTP. The server's result goes back to the harness, which adds it to the context as a tool result.">
+flowchart TD
+  M["Model writes<br/>a tool call"] --> H["Harness<br/>(MCP client)"]
+  H -- "tools/call" --> S["MCP server:<br/>local process (stdio)<br/>or remote (HTTP)"]
+  S -- "result" --> R["Harness adds it<br/>as a tool_result"]
+</pre>
+
+<h3>Up close: tool search and plugins</h3>
+<p>Tool definitions are big. Anthropic's example setup of five common servers has 58 tools that take about 55,000 tokens before the agent does anything. Their docs also say the model's ability to pick the right tool drops once it has more than 30–50 to choose from. <b>Tool search</b> fixes both problems with progressive disclosure:</p>
+<ul>
+  <li>Tools are marked <code>defer_loading: true</code>. The model starts with only a search tool, plus (in Claude Code) the bare names of the deferred tools.</li>
+  <li>When it needs one, it searches. The API returns the best matches (up to 5 by default) and adds their full definitions to the conversation, where the search happened.</li>
+  <li>Deferred tools are kept out of the cached start of the prompt, so loading one doesn't break the <a href="#prompt-caching">cache</a>. The definition is added at the end, like any new message.</li>
+</ul>
+<p>Claude Code turns tool search on by default for MCP tools on recent models. Anthropic measured it on their MCP evaluations: Claude Opus 4 went from 49% to 74%, and Opus 4.5 from 79.5% to 88.1%.</p>
+<p>A <b>plugin</b> adds no new mechanism. It is a folder that bundles the things you already know: <code>skills/</code>, <code>agents/</code> (subagents), <code>hooks/hooks.json</code>, <code>.mcp.json</code> (MCP servers to start), a <code>bin/</code> folder put on the agent's PATH, and a manifest in <code>.claude-plugin/plugin.json</code>. Plugins are installed from a <b>marketplace</b>, a git repository with a catalog file. Each part then loads by its own rules: descriptions in the listing, hooks on every matching tool call, servers started with the session. That makes a plugin the natural way to share a setup with your team (see <a href="#share-with-team">From your laptop to your team</a>).</p>
+
+<h3>What 30 servers cost</h3>
+<p>Say you connect 30 MCP servers with 10 tools each. These are my estimates: about 950 tokens per tool (the average in Anthropic's five-server example) and about 10 tokens per bare name.</p>
+<table>
+  <tr><th></th><th>All loaded up front</th><th>With tool search</th></tr>
+  <tr><td>Tool text at session start</td><td>≈ 285,000 tokens</td><td>≈ 3,000 tokens</td></tr>
+  <tr><td>Fits a 200k window?</td><td>No</td><td>Yes</td></tr>
+  <tr><td>Tools to choose from</td><td>300</td><td>the 3–5 it found</td></tr>
+  <tr><td>Processes on your laptop (stdio)</td><td>30</td><td>still 30</td></tr>
+</table>
+<p>Tool search saves the context, but not the rest. Every server is still a running program with your permissions, and a vague tool name still loses the search. Removing a server you never use is cheaper than any optimisation.</p>
+
+<h3>Your turn</h3>
+<predict id="skill-vague-description" minutes="2">
+  <q><p>You write a careful 300-line skill for your team's database migrations. Its frontmatter says <code>description: Helpers for the orders service.</code> You ask the agent to add a column to the orders table, and it writes the migration by hand, ignoring your skill. Why?</p></q>
+  <answer><p><b>The model only saw the description.</b> The 300 lines load after the model decides the skill fits, and "Helpers for the orders service" doesn't say migrations. Write what it does and when to use it, with the words people actually type: "How to write and test database migrations (add column, backfill, rename). Use for any schema change."</p></answer>
+</predict>
+
+<predict id="skill-15-servers" minutes="2">
+  <q><p>A teammate connects 15 more MCP servers "just in case" to an agent harness that loads every tool up front. Now the agent is slower, summarises its history earlier, and once used a ticket system's <code>search</code> tool when it meant to search the code. Why did more tools make it worse?</p></q>
+  <answer><p><b>Every definition is in every request, and the choice got harder.</b> Hundreds of tool definitions eat tens of thousands of tokens before the task starts, which leaves less room and forces compaction sooner. And with far more than 30–50 tools, many with similar names, the model picks the wrong one more often. Remove unused servers, prefix tool names by service, and turn on tool search if the harness has it.</p></answer>
+</predict>
+
+<predict id="skill-search-cache" minutes="2">
+  <q><p><a href="#prompt-caching">Prompt caching</a> said that adding or removing tools mid-session breaks the cache. With tool search, a new tool definition appears halfway through the session. Does that break the cache?</p></q>
+  <answer><p><b>No.</b> Deferred tools are kept out of the tool list at the start of the prompt. When the model finds one, its definition is added at the point in the conversation where the search happened, after everything already cached. The prefix doesn't change, so only the new part is read at full price.</p></answer>
+</predict>
+
+<predict id="skill-listing-budget" minutes="3">
+  <q><p>You install four plugins and now have 150 skills. Your new skill has a sharp description, but the agent rarely uses it unless you type its name. It does appear in the <code>/</code> menu. What is going on?</p></q>
+  <hint>The listing has a size limit.</hint>
+  <answer><p><b>Its description was probably cut from the listing.</b> The listing is capped at about 1% of the context window. Over that, Claude Code keeps every skill's name but drops descriptions, starting with the least-used skills, and a new skill has never been used. Turn off the skills you don't use (<code>/skill-doctor</code> shows cost and use), so the ones that matter keep their descriptions.</p></answer>
+</predict>
+
+<predict id="skill-plugin-trust" minutes="3">
+  <q><p>Stretch: a colleague suggests a plugin from a public marketplace. It has two skills, a <code>PostToolUse</code> hook and a local MCP server. "It's just prompts," they say. What actually runs on your laptop?</p></q>
+  <answer><p><b>Real code, with your permissions.</b> The hook is a script the harness runs after every matching tool call. The MCP server is a process started with your session, and its tool results enter the context, where they can carry instructions too. Skills can ship scripts, and anything in <code>bin/</code> lands on the agent's PATH. Review a plugin like a new dependency: read it, pin a version, and prefer your team's own marketplace.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Audit what loads: run <code>/context</code> and <code>/mcp</code> in Claude Code (or your agent's equivalent). Remove every MCP server and plugin you haven't used this month. <code>/skill-doctor</code> lists skills that were never invoked.</li>
+  <li>Reread each skill's description as if you were the model and saw nothing else. Does it say what the skill does, when to use it, and use the words your team types?</li>
+  <li>Turn one repeated explanation into a skill, such as "use our client library for that third party, it already has retries and rate limits". Then check it triggers on a realistic request. A skill points the agent the right way; if it must never be broken, back it with a check (see <a href="#unwritten-rules">Turn unwritten rules into checks</a>).</li>
+</ul>
+<p><b>If someone asks</b> "should we connect every MCP server we can find?": "No. Every server adds tool descriptions the model has to read and choose between, and it's code running with our permissions. Connect the few we use, write good descriptions, and let the rest load on demand."</p>
+</atwork>
+
+<fact title="From one company's protocol to everyone's in a year">
+<p>Anthropic published MCP on 25 November 2024 as an open standard, with ready-made servers for Google Drive, Slack, GitHub, Git, Postgres and Puppeteer. The spec says the design took inspiration from the Language Server Protocol, the standard that lets any editor talk to any language's tooling. Rivals adopted it within months: on 26 March 2025 OpenAI's CEO Sam Altman wrote that "people love MCP" and that OpenAI would add it across its products, starting with its Agents SDK, and in April Google DeepMind's CEO Demis Hassabis said Gemini would support it. On 9 December 2025, Anthropic gave MCP to the new Agentic AI Foundation under the Linux Foundation, co-founded with Block and OpenAI, next to OpenAI's <code>AGENTS.md</code>. By then there were more than 10,000 public MCP servers.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: skills, MCP, plugins; Claude API docs: Agent Skills, tool search tool; MCP specification 2026-07-28; Anthropic engineering blog, November 2025; Anthropic announcements, November 2024 and December 2025).</p>
+
+<recap><ul>
+  <li>Skills, MCP tools and plugins all end up as text in the context. Only short descriptions (or tool names) load up front; the full text loads when the model decides it fits.</li>
+  <li>MCP is JSON-RPC between the harness and a tool server, local (stdio) or remote (HTTP). The model just sees ordinary tools. A plugin bundles skills, hooks, subagents and servers.</li>
+  <li>The description is the whole interface. Write it for a reader who sees nothing else, and remove what you don't use: every extra entry costs context and makes the right choice harder.</li>
+</ul></recap>
