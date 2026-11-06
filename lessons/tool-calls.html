@@ -1,0 +1,132 @@
+<p class="lead">A tool is three pieces of text the model reads: a name, a description and a JSON schema. A tool call is JSON the model writes back. Everything in between, checking that JSON, running it and choosing what to send back, is your harness's code, and that is where most agents get good or bad.</p>
+
+<h3>The idea</h3>
+<p>Picture a new on-call engineer handed a folder of team scripts. They never read the source. They only see each script's name, a one-line comment and its flags. If the comment says "search logs", they will happily search a whole day of logs and print every line to the terminal. If it says "returns the 50 newest matching lines; narrow the time range if there are more", they use it well on the first try.</p>
+<p>The model is that engineer, except it can never open the source. Here is the life of one tool call:</p>
+<ol>
+  <li><b>Definitions become prompt text.</b> The API turns each tool's name, description and schema into text near the very start of the prompt. The model knows only what that text says. It is sent, and paid for, on every request.</li>
+  <li><b>The model writes JSON.</b> It picks a tool by reading the descriptions, then writes the arguments token by token, like any other text. Nothing has run yet.</li>
+  <li><b>The harness checks and runs.</b> Is the tool name real? Do the arguments match the schema? Is it allowed? Only then does ordinary code run it.</li>
+  <li><b>The result goes back as text.</b> Output or error, it becomes a <code>tool_result</code> in the conversation. It stays there for the rest of the session and is sent again with every later step.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The life of one tool call, top to bottom. The model reads the tool's name, description and schema as text and writes a JSON call. The harness checks it. If the call is invalid, an error message goes back as the result. If it is valid, the harness runs the tool and trims the output. Either way the result is added to the context as text, and the model reads it on the next step.">
+flowchart TD
+  A["Name + description<br/>+ schema (as text)"] --> B["Model writes<br/>a JSON call"]
+  B --> C{"Harness:<br/>valid call?"}
+  C -- no --> E["Error message<br/>as the result"]
+  C -- yes --> D["Run the tool,<br/>trim the output"]
+  D --> F["Result: text<br/>in the context"]
+  E --> F
+  F --> B
+  style D stroke-width:3px
+</pre>
+
+<p>The loop itself is in <a href="#agent-loop">An agent is a while loop</a>. This lesson is about the two pieces of text on either side of it: what the model reads before the call, and what it reads after.</p>
+
+<h3>Up close</h3>
+<p>Here is the harness step done properly. Every failure becomes a result the model can read, and the output is trimmed before it enters the context:</p>
+<pre><code class="language-python">from jsonschema import validate
+
+def handle(b):  # one tool_use block
+    def res(text, err=False):
+        return {"type": "tool_result",
+                "tool_use_id": b.id,
+                "content": text,
+                "is_error": err}
+    tool = TOOLS.get(b.name)
+    if tool is None:
+        return res("Unknown tool: "
+                   + b.name, True)
+    try:
+        validate(b.input,
+                 tool["schema"])
+        out = tool["run"](**b.input)
+    except Exception as e:
+        return res(f"Error: {e}", True)
+    return res(trim(out))
+
+def trim(out, limit=8000):
+    if len(out) &lt;= limit:
+        return out
+    return (out[:limit]
+            + f"\n[cut: {len(out)}"
+            " chars in total. Use a"
+            " narrower query.]")
+</code></pre>
+<p>Four details are worth knowing (Anthropic's API here; other providers work the same way):</p>
+<ul>
+  <li><b>The JSON can be wrong.</b> The model generates it like prose, so it can send <code>"2"</code> instead of <code>2</code>, or skip a required field. With <code>"strict": true</code> on a tool, the API only lets the model pick tokens that keep the JSON valid for your schema (the sampling step from <a href="#sampling">How the next token is chosen</a>, restricted). Valid is not the same as correct, though: a refund of 1250 instead of 12.50 passes any schema.</li>
+  <li><b>Errors are results.</b> Return the error as a <code>tool_result</code> with <code>"is_error": true</code>. Don't crash the loop. Anthropic's docs say that when a call is invalid, the model usually retries 2–3 times with corrections before giving up, so tell it what to fix: "Rate limit exceeded. Retry after 60 seconds." beats "failed".</li>
+  <li><b>Several calls at once.</b> One reply can contain several <code>tool_use</code> blocks, such as three file reads. The API doesn't set an order: run independent reads in parallel, and anything with side effects one at a time, in order. Send all the results back in <b>one</b> message, each with its id. Splitting them into separate messages "teaches" the model, from its own history, to stop calling tools in parallel.</li>
+  <li><b>Results have no special authority.</b> A result is just text in the context. A web page or ticket that says "ignore your instructions" lands there too (see <a href="#prompt-injection">Prompt injection</a>).</li>
+</ul>
+
+<h3>What a good tool looks like</h3>
+<p>Anthropic's tool docs call detailed descriptions "by far the most important factor in tool performance" and suggest at least 3–4 sentences per tool. Their engineering blog adds that Claude Code caps tool responses at 25,000 tokens by default. For MCP tools it also warns you above 10,000 tokens.</p>
+<table>
+  <tr><th></th><th>Vague</th><th>Better</th></tr>
+  <tr><td>Name</td><td><code>search</code></td><td><code>logs_search</code></td></tr>
+  <tr><td>Description</td><td>"Search logs."</td><td>What it does, when to use it, when not to, what it returns, its limits</td></tr>
+  <tr><td>Parameters</td><td><code>svc</code>, <code>q</code></td><td><code>service</code> (an enum of real names), <code>query</code>, <code>minutes</code></td></tr>
+  <tr><td>Output</td><td>Every matching line</td><td>50 newest lines, a total count, and a hint to narrow the search</td></tr>
+  <tr><td>Error</td><td>"400"</td><td>"No service 'order'. Valid: orders, payments."</td></tr>
+</table>
+
+<h3>Worked example</h3>
+<p>An agent investigating an incident calls a log tool that returns 5,000 JSON log lines. At about 40 tokens per line (logs tokenize badly, see <a href="#tokens">Tokens and the context window</a>), that is 200,000 tokens. The session then runs 30 more steps, with the result read from the <a href="#prompt-caching">cache</a> at a tenth of the price each time:</p>
+<table>
+  <tr><th></th><th>Raw output</th><th>50 lines + count</th></tr>
+  <tr><td>Tokens added</td><td>200,000</td><td>2,000</td></tr>
+  <tr><td>Next 30 steps, cached</td><td>600,000 full-price</td><td>6,000 full-price</td></tr>
+  <tr><td>Lines the model must search</td><td>5,000</td><td>50</td></tr>
+</table>
+<p>One careless tool call costs more than the rest of the session, and it fills a fifth of a 1-million-token window with noise. The fix belongs in the tool, not in the prompt.</p>
+
+<h3>Your turn</h3>
+<predict id="tool-vague-query" minutes="2">
+  <q><p>Your team adds an MCP tool called <code>query</code>, described as "Runs a SQL query." It's meant for the read-only analytics warehouse. While fixing a bug, the agent uses it to look up a live order, and gets stale data. Why did it pick that tool?</p></q>
+  <answer><p><b>The description is all the model knows.</b> "Runs a SQL query" matches "look up an order" perfectly. Nothing says which database, that the data is a day old, or when not to use it. Rename it (<code>warehouse_sql</code>) and describe what is in it, how fresh it is, and what to use for live data. If it must never touch production, enforce that with database permissions, not with words.</p></answer>
+</predict>
+
+<predict id="tool-50k-logs" minutes="2">
+  <q><p>A teammate's <code>get_logs</code> tool returns every line from the last 24 hours, about 50,000 lines. The agent finds the error in one call, but the rest of the session is slow and expensive, and an hour later it is summarising its history much earlier than usual. Why does one call hurt the whole session?</p></q>
+  <answer><p><b>The result never leaves.</b> It sits in the context and is sent again with every later step, so every step pays for it, and it takes a big share of the window, which forces compaction (summarising) early. It also buries the one line that mattered. Make the tool filter: errors only, newest first, a line limit, a total count, and a hint like "narrow the time range".</p></answer>
+</predict>
+
+<predict id="tool-error-400" minutes="2">
+  <q><p>Your ticket tool returns <code>Error 400</code> when the ID format is wrong. The agent tries three slightly different IDs, then tells you the ticket system is down. What would have made it succeed?</p></q>
+  <answer><p><b>An error that says what to do next.</b> "400" gives the model nothing to act on, so it guesses, and after a few failed guesses it gives up. Return something like "No ticket 'pay 12'. IDs look like PAY-1234. Use tickets_search to find one." Write tool errors for a reader who can't see your code, because that is exactly who reads them.</p></answer>
+</predict>
+
+<predict id="tool-parallel-side-effects" minutes="3">
+  <q><p>To speed up your agent, your harness runs every tool call in a reply at the same time with <code>asyncio.gather</code>. One day a reply contains two calls: "apply the migration" and "run the integration tests". The tests fail randomly. What went wrong?</p></q>
+  <answer><p><b>The calls depended on each other, and they raced.</b> The API leaves the order to you: it doesn't say that calls in one reply are safe to run at the same time. Run read-only calls in parallel, and run calls with side effects one at a time, in the order the model wrote them. Then send all the results back together in one message.</p></answer>
+</predict>
+
+<predict id="tool-strict-refund" minutes="3">
+  <q><p>Stretch: a refund tool's schema says <code>amount</code> is a number of pounds. You turn on strict mode, so every call matches the schema. One day the agent refunds 1250 for an order of £12.50. Didn't strict mode prevent this?</p></q>
+  <hint>What exactly does a schema check?</hint>
+  <answer><p><b>No. Strict mode guarantees the shape, not the meaning.</b> 1250 is a valid number, so it passes. Make units impossible to confuse (<code>amount_pence</code>, an integer, described in the description), and put the business rule in the tool's code: the refund can't be more than the order total. Rules that must always hold belong in code, because the model's JSON is only a request.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Pick one tool or MCP server your team uses. Call it the way the agent would and look at the raw output. Is it small and useful? Does it have a limit, a filter and a total count?</li>
+  <li>Read its description as if you had never seen the code. Does it say what the tool does, when to use it, when not to, and what it returns? Rename vague parameters (<code>user</code> → <code>user_id</code>).</li>
+  <li>Trigger one error on purpose. Does the message tell the reader what to try next?</li>
+</ul>
+<p><b>If someone asks</b> "why does the agent keep using the wrong tool?": "The model never sees our code, only each tool's name, description and schema, so that text is the whole interface. And whatever the tool returns stays in the context for the rest of the session, so small, focused output matters as much as the description."</p>
+</atwork>
+
+<fact title="The model that taught itself to use a calculator">
+<p>In February 2023, months before any big API had a tool-call feature, researchers at Meta AI Research published Toolformer. They took GPT-J, an open 6.7-billion-parameter model, and let it write API calls as plain text in the middle of sentences, like <code>[Calculator(400 / 1400) → 0.29]</code>. The training data labelled itself: the model suggested possible calls all over a large set of web text, the researchers ran them, and kept only the ones whose results made the following words easier to predict. Tools included a calculator, a question-answering system, Wikipedia search, translation and a calendar. On maths word problems, Toolformer chose the calculator for 97.9% of examples and beat GPT-3, a model 26 times larger.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Anthropic API docs: define tools, handle tool calls, parallel and strict tool use; Claude Code MCP docs; Anthropic engineering blog, September 2025; Schick et al., 2023).</p>
+
+<recap><ul>
+  <li>A tool is a name, a description and a schema, all read as text. The model writes JSON; your harness checks it, runs it and decides what comes back.</li>
+  <li>Return errors as results that say what to fix. Send parallel results in one message, and run calls with side effects in order.</li>
+  <li>Every result stays in the context for the rest of the session. Keep tool output small, filtered and useful.</li>
+</ul></recap>
