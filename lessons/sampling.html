@@ -1,0 +1,120 @@
+<p class="lead">A model doesn't pick the next word. It gives a probability to every token it knows, and then a dice roll picks one. That roll is why the same prompt gives a different answer, and the same ticket a different diff, every time you run it.</p>
+
+<h3>The idea</h3>
+<p>Think of the word suggestions above your phone keyboard. It offers three words, ranked. Now imagine that instead of always taking the first one, you roll a weighted die: the top word wins most often, but sometimes the second or third one does. Do that for every word of a message and you get a slightly different message each time.</p>
+<p>A language model writes exactly like that, one token at a time:</p>
+<ol>
+  <li><b>Score.</b> The model reads everything in the context and gives a score to <i>every</i> token in its vocabulary, all of them, not just a few good ones. These raw scores are called <b>logits</b>.</li>
+  <li><b>Turn scores into probabilities.</b> A function called <b>softmax</b> turns the scores into probabilities that add up to 100%. A higher score means a higher chance.</li>
+  <li><b>Pick.</b> A small program called the <b>sampler</b> picks one token at random, weighted by those probabilities. This is <b>sampling</b>.</li>
+  <li><b>Repeat.</b> The picked token is added to the context, and the model scores the next position, now taking that token into account.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The generation loop: the context goes into the model, which gives a probability to every token in its vocabulary. The sampler picks one token at random, weighted by probability. The token is added to the context, and the loop runs again for the next token.">
+flowchart TD
+  A["Context so far"] --> B["Model<br/>a score for every token"]
+  B --> C["Probabilities<br/>retry 50% · timeout 30% · …"]
+  C --> D["Sampler<br/>weighted random pick"]
+  D --> E["Add the token<br/>to the context"]
+  E --> A
+  style D stroke-width:3px
+</pre>
+
+<p>The key thing is step 4. Each pick changes everything after it. If the third token of a plan is "retry" in one run and "timeout" in another, the two runs are now answering slightly different questions, and they drift further apart with every token. In an agent, the drift is bigger still: a different first step means different files read, different tool results, and a different diff at the end.</p>
+
+<h3>Up close</h3>
+<p>Two settings change how the die is weighted. Both act on the probabilities before the pick:</p>
+<ul>
+  <li><b>Temperature</b> sharpens or flattens the probabilities. Below 1, likely tokens get more likely and unlikely ones fade away. Above 1, the field evens out and rare tokens get a real chance. At 0, the sampler just takes the top token every time. That is called <b>greedy decoding</b>.</li>
+  <li><b>Top-p</b> (also called <b>nucleus sampling</b>) drops the long tail. It keeps the smallest group of top tokens whose probabilities add up to p, say 0.9, and throws the rest away. The model's vocabulary has tens of thousands of tokens, and most of them are nonsense in any given spot. Top-p, introduced in a 2019 paper by Ari Holtzman and colleagues, makes sure none of that nonsense can win the roll.</li>
+</ul>
+<p>Some APIs also have <b>top-k</b>: keep only the k most likely tokens. Here is the whole sampler in a few lines of Python:</p>
+<pre><code class="language-python">import math
+import random
+
+def sample(scores, t=1.0, top_p=1.0):
+    # scores: {token: logit}
+    if t == 0:  # greedy
+        return max(scores,
+                   key=scores.get)
+    m = max(scores.values())
+    w = {k: math.exp((v - m) / t)
+         for k, v in scores.items()}
+    total = sum(w.values())
+    probs = sorted(
+        ((p / total, k)
+         for k, p in w.items()),
+        reverse=True)
+    # top-p: keep the head only
+    keep, acc = [], 0.0
+    for p, k in probs:
+        keep.append((p, k))
+        acc += p
+        if acc &gt;= top_p:
+            break
+    ps, ks = zip(*keep)
+    return random.choices(
+        ks, weights=ps)[0]
+</code></pre>
+<p>Dividing the scores by <code>t</code> is the whole trick. A small <code>t</code> stretches the gaps between scores, so the leader pulls away. A large <code>t</code> squeezes them together.</p>
+<p><b>Many newer APIs won't let you set these at all.</b> On Anthropic's API, Claude Opus 4.7 and later models return a 400 error if you send <code>temperature</code>, <code>top_p</code> or <code>top_k</code>; the docs say to remove them and steer the model with the prompt instead. OpenAI's reasoning models have the same rule: when reasoning is on, remove <code>temperature</code> and <code>top_p</code>. The vendors don't publish their full reasons. What you control instead is the prompt and the effort level (see <a href="#thinking-effort">Thinking and effort levels</a>). Open-weight models that you run yourself still give you every knob.</p>
+
+<h3>Worked example</h3>
+<p>An agent has written "The fix is to add a" and is choosing the next token. Say the model's probabilities are: retry 50%, timeout 30%, lock 12%, cache 5%, and the last 3% spread thinly over 3,000 unlikely tokens. Here is what each setting does to the odds:</p>
+<table>
+  <tr><th>Token</th><th>t=1</th><th>t=0.5</th><th>t=1.5</th><th>top-p 0.9</th></tr>
+  <tr><td>retry</td><td>50%</td><td>70%</td><td>22%</td><td>54%</td></tr>
+  <tr><td>timeout</td><td>30%</td><td>25%</td><td>16%</td><td>33%</td></tr>
+  <tr><td>lock</td><td>12%</td><td>4%</td><td>9%</td><td>13%</td></tr>
+  <tr><td>cache</td><td>5%</td><td>1%</td><td>5%</td><td>0%</td></tr>
+  <tr><td>3,000 others</td><td>3%</td><td>~0%</td><td><b>49%</b></td><td>0%</td></tr>
+</table>
+<p>Low temperature makes the favourite stronger. High temperature is the surprise: each junk token is still unlikely, but there are 3,000 of them, so together they now win about half the time. That is why a "creative" temperature quickly turns into made-up words. Top-p 0.9 keeps retry, timeout and lock (92% together), drops everything else, and scales the three back up to 100%.</p>
+
+<h3>Your turn</h3>
+<predict id="samp-two-diffs" minutes="2">
+  <q><p>You give an agent the same ticket twice, in two fresh sessions, with the same repo and the same prompt. You get two different diffs. One passes the tests; the other fails one. Is something broken?</p></q>
+  <answer><p><b>No. That is sampling.</b> Every token is a weighted random pick, and an early difference (a different file read first, a different plan) grows into a different diff. Each run is one draw from many possible results. So judge an agent setup by how often it succeeds over several runs, and let the tests decide which diff is correct, not how the code looks.</p></answer>
+</predict>
+
+<predict id="samp-one-run" minutes="2">
+  <q><p>A teammate changes the team's agent instructions, runs one task, and gets a clean PR. Before the change, the same task failed once. "The new instructions work," they say. Do you agree?</p></q>
+  <answer><p><b>Not yet.</b> One run before and one run after is two dice rolls. The old instructions might pass 6 times out of 10 and the new ones 5 times out of 10, and you would still see exactly this about one time in five. Run the task a few times with each version before deciding. With a big task, even two runs each tell you much more than one.</p></answer>
+</predict>
+
+<predict id="samp-400-error" minutes="2">
+  <q><p>Your team's code review bot sends <code>temperature=0</code> "to make reviews consistent". After switching it to a newer Claude model, every request fails with a 400 error. What do you do?</p></q>
+  <answer><p><b>Remove the parameter.</b> Newer Claude models reject <code>temperature</code>, <code>top_p</code> and <code>top_k</code>. Get consistency some other way: a clear checklist in the prompt, a fixed output format (structured outputs or a JSON schema), and checks in code on the result. Anthropic's docs add that <code>temperature = 0</code> never guaranteed identical outputs anyway.</p></answer>
+</predict>
+
+<predict id="samp-temp-zero" minutes="3">
+  <q><p>You run an open-weight model on your own server with temperature 0. Alone on your laptop, the same prompt gives the same answer every time. In production, with many users, the same prompt sometimes gives a different answer. How, if there's no randomness?</p></q>
+  <hint>What else is the server doing while it runs your request?</hint>
+  <answer><p><b>Your request is batched with other people's.</b> Servers run many requests together on the GPU, and how many depends on the load at that moment. With a different batch size, the GPU adds up the same numbers in a different order, and floating-point sums can round differently. A tiny change in a score can flip which token is top, and then the texts drift apart. In 2025, Thinking Machines Lab ran one prompt 1,000 times at temperature 0 and got 80 different completions. They were the same for the first 102 tokens, then split at token 103. With special "batch-invariant" GPU code, all 1,000 matched, but it ran noticeably slower.</p></answer>
+</predict>
+
+<predict id="samp-snapshot-test" minutes="3">
+  <q><p>Stretch: you add a feature that asks a model to summarise a support ticket as JSON. Your test saves one good output and asserts that every new output matches it exactly. The test is flaky. What should it check instead?</p></q>
+  <answer><p><b>Properties, not exact text.</b> Check what must always be true: the output parses as JSON, matches the schema, has the right ticket ID, stays under a length limit, and mentions the product named in the ticket. For quality, run a small set of examples several times and require a pass rate, such as 9 out of 10. Exact-match tests fight sampling, and sampling wins.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Never judge an agent setup, a prompt change or a new model on one run. Run the same task at least twice, ideally a few times, before you decide anything.</li>
+  <li>When an agent fails a task once, rerun it before rewriting your instructions. If it fails the same way twice, the problem is likely in the setup, not in the roll of the dice.</li>
+  <li>Search your team's code for <code>temperature</code>, <code>top_p</code> and <code>top_k</code> in model calls. On newer models they cause errors; remove them before an upgrade and test with property checks, not exact strings.</li>
+</ul>
+<p><b>If someone asks</b> "why does the AI give a different answer every time?": "The model gives a probability to every possible next word and then picks one at random, weighted by those probabilities, for every word it writes. So each run is one sample, and the way to judge it is to run it a few times and count how often the result is right."</p>
+</atwork>
+
+<fact title="Why it's called temperature">
+<p>The word comes from 19th-century physics. Ludwig Boltzmann described how the particles of a gas share out energy: at temperature T, a state with energy E has a probability proportional to e<sup>−E/kT</sup>. Cold, almost everything sits in the lowest-energy state. Hot, all states become nearly equally likely. Softmax with a temperature is the same formula, with a token's score in place of minus its energy. In 1983, Scott Kirkpatrick and colleagues at IBM borrowed it to design computers: their "simulated annealing" placed and wired chips by starting "hot" and cooling slowly, like metal being annealed. In 1985, Geoffrey Hinton, David Ackley and Terrence Sejnowski built the "Boltzmann machine", a neural network named after Boltzmann. In 2024 Hinton shared the Nobel Prize in Physics with John Hopfield, and the Nobel committee pointed to the Boltzmann machine's use of statistical physics.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Anthropic and OpenAI API docs; Holtzman et al., ICLR 2020; Thinking Machines Lab, 2025; Kirkpatrick et al., Science, 1983; Nobel Prize in Physics 2024).</p>
+
+<recap><ul>
+  <li>The model gives a probability to every token; the sampler picks one at random, and each pick changes everything after it.</li>
+  <li>Temperature sharpens or flattens the odds; top-p cuts off the long tail of junk tokens. Newer APIs often don't let you set either.</li>
+  <li>Even temperature 0 isn't fully repeatable on a busy server. Judge agents over several runs, never one.</li>
+</ul></recap>
