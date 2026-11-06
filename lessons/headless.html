@@ -1,0 +1,136 @@
+<p class="lead">An "agent factory" is the agent you already use, started by a script, a schedule or CI instead of by you typing. What changes is that nobody is there to answer a prompt or notice it going in circles, so permissions, limits and a place to work must all be decided before the run starts.</p>
+
+<h3>The idea</h3>
+<p>Picture handing a task to a contractor in another time zone. You'll be asleep while they work, so the note has to carry everything: the task, what they may touch, when to give up, and where to leave the result. A good note gets a pull request by morning. A vague one gets a polite message saying they were blocked at step two.</p>
+<p>Running an agent without you is that note, written as code. The loop is the same one from <a href="#agent-loop">An agent is a while loop</a>. Five things change:</p>
+<ol>
+  <li><b>Something else starts it</b>: your script, a cron schedule, a CI event, or a webhook (an HTTP call from another system, such as "ticket created" or "alert fired").</li>
+  <li><b>The prompt is fixed</b>: written in advance, ideally a file in the repo, so every run gets the same brief.</li>
+  <li><b>Nobody answers permission prompts</b>, so what the agent may do is set before it starts.</li>
+  <li><b>Nothing stops it but limits</b>: a cap on turns, on spend, and on wall-clock time.</li>
+  <li><b>A program reads the output</b>: an exit code and JSON, not a chat window.</li>
+</ol>
+
+<pre class="mermaid" data-alt="One unattended run, top to bottom: a trigger such as cron, a CI event or a webhook starts a script. The script creates a new worktree and branch, then starts claude -p with a fixed prompt file. The same agent loop runs inside fixed permissions and turn, budget and time limits. It ends with a JSON result and an exit code, which the script turns into a pull request, a comment or a log line.">
+flowchart TD
+  T["Trigger: cron, CI event,<br/>webhook, your script"] --> W["New worktree<br/>and branch"]
+  W --> P["claude -p with a<br/>fixed prompt file"]
+  P --> L["The same agent loop,<br/>inside fixed permissions<br/>and limits"]
+  L --> R["JSON result<br/>+ exit code"]
+  R --> O["Script opens a PR,<br/>posts or logs"]
+  style L stroke-width:3px
+</pre>
+
+<p>That is the whole factory. Fifty tickets overnight is this chain started fifty times, each run in its own worktree. There is no other software to buy.</p>
+
+<h3>Up close</h3>
+<p>In Claude Code, the switch is <code>-p</code> (print mode): it runs the task, prints the result and exits, with code 0 on success and non-zero on failure. Here is a nightly job as a plain script:</p>
+<pre><code class="language-bash">#!/bin/bash
+# nightly-deps.sh: one fixed task
+b="deps-$(date +%F)"
+git worktree add "../$b" -b "$b"
+cd "../$b"
+timeout 30m claude -p \
+  "$(cat prompts/deps.md)" \
+  --permission-mode dontAsk \
+  --allowedTools Read Edit \
+    "Bash(npm test *)" \
+    "Bash(npm install *)" \
+  --max-turns 40 \
+  --max-budget-usd 5 \
+  --output-format json \
+  &gt; "../logs/$b.json"
+echo "$b exit=$?" &gt;&gt; ../logs/runs.log
+</code></pre>
+<p>Line by line, the note to the contractor:</p>
+<ul>
+  <li><b>A worktree per run.</b> A git worktree is a second working folder on its own branch, sharing the same repository. Two runs never edit the same files, and your own checkout stays untouched. <code>claude -p -w &lt;name&gt;</code> can create one for you; <a href="#task-workspace">One folder per task</a> covers worktrees properly.</li>
+  <li><b>Permissions decided up front.</b> In current versions a <code>-p</code> run with no mode set starts in Manual mode, where any call that needs approval is simply denied. <code>dontAsk</code> makes that explicit: the allowlist runs, everything else is refused, and the run never waits for input. The rules use the same syntax as in <a href="#hooks-permissions">Hooks and permissions</a>.</li>
+  <li><b>Three limits.</b> <code>--max-turns</code> caps loop passes. <code>--max-budget-usd</code> stops at an estimated spend; the docs warn it can overshoot by one response, so leave headroom. <code>timeout</code> covers what neither sees, such as a hung test; it kills the run and returns exit code 124.</li>
+  <li><b>JSON for the script.</b> The output has <code>subtype</code> (<code>success</code>, <code>error_max_turns</code>, <code>error_max_budget_usd</code>…), <code>result</code>, <code>num_turns</code>, <code>total_cost_usd</code> and <code>permission_denials</code>. Log them every run: they are your first numbers about your own loop.</li>
+</ul>
+<p>One more flag to know: without <code>--bare</code>, <code>-p</code> loads CLAUDE.md, hooks, skills and MCP servers just like an interactive session. With it, it loads none of them, and you pass what you need with flags. The docs recommend bare mode for scripts and say it will become the default for <code>-p</code>, so decide which you want rather than relying on today's default.</p>
+
+<h3>Other ways to start the loop</h3>
+<ul>
+  <li><b>The Agent SDK</b> (<code>claude-agent-sdk</code> for Python, also TypeScript) runs the same loop from your own code, with the same options: <code>max_turns</code>, <code>max_budget_usd</code>, <code>permission_mode</code>, <code>cwd</code>. Use it when a service, not a shell script, starts runs.</li>
+  <li><b>CI.</b> Anthropic's GitHub Action, <code>anthropics/claude-code-action@v1</code>, is built on the SDK. Without a <code>prompt</code> input it answers <code>@claude</code> mentions; with one, it runs on any event, including a schedule, and passes <code>claude_args</code> such as <code>--max-turns</code> to the CLI.</li>
+  <li><b>Codex</b> has the same idea: <code>codex exec</code> runs in a read-only sandbox by default, and <code>--sandbox workspace-write</code> lets it edit.</li>
+</ul>
+<p>Whatever starts it, the CI job needs the same limits. In a GitHub Actions workflow, a schedule, a concurrency group and a timeout do the work:</p>
+<pre><code class="language-yaml">on:
+  schedule:
+    # 02:00 UTC, Monday to Friday
+    - cron: "0 2 * * 1-5"
+# never two of these at once
+concurrency:
+  group: nightly-deps
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    # the default is 360 minutes
+    timeout-minutes: 30
+</code></pre>
+
+<h3>Skipping permissions</h3>
+<p>The tempting fix for denied calls is <code>--dangerously-skip-permissions</code> (the same as <code>--permission-mode bypassPermissions</code>). Claude Code's docs are blunt: use it only "in isolated environments like containers, VMs, or dev containers without internet access", and it "offers no protection against prompt injection". On your laptop, the run has your SSH keys, your cloud credentials and your production config. Safer options, in order: an allowlist with <code>dontAsk</code>; the built-in sandbox, which uses the operating system (Seatbelt on macOS, bubblewrap on Linux) to limit what shell commands can write and which hosts they can reach; and a container or VM when the agent truly needs broad rights. <code>auto</code> mode, where a classifier model reviews each action, cuts prompts, but its docs say it "does not guarantee safety".</p>
+
+<h3>What replaces you</h3>
+<table>
+  <tr><th>At the keyboard</th><th>Unattended</th></tr>
+  <tr><td>You type the task</td><td>A prompt file in the repo</td></tr>
+  <tr><td>You approve each command</td><td>Allowlist + <code>dontAsk</code>, sandbox or container</td></tr>
+  <tr><td>You notice it going in circles</td><td>Turn, budget and time limits</td></tr>
+  <tr><td>You read the answer</td><td>Exit code and JSON</td></tr>
+  <tr><td>One terminal, one checkout</td><td>One worktree and branch per run</td></tr>
+</table>
+
+<h3>Your turn</h3>
+<predict id="hl-silent-denial" minutes="2">
+  <q><p>A cron job runs <code>claude -p "Run the tests and fix any failures"</code> with no other flags. In the morning there is no change, no error in the log, and the result says it couldn't run the tests without permission. What happened?</p></q>
+  <answer><p><b>Every call that needed approval was denied, because nobody could approve it.</b> A <code>-p</code> run can't show a prompt, so running <code>npm test</code> and editing files were refused, and the agent reported that in its final text. The loop ended normally, so the script saw no failure. List exactly what the task needs with <code>--allowedTools</code>, and have the script check <code>permission_denials</code> in the JSON output.</p></answer>
+</predict>
+
+<predict id="hl-waits-forever" minutes="2">
+  <q><p>A teammate's Agent SDK service asks for approval in Slack: its permission callback posts a message and waits for a reply. A nightly run starts at 02:00. At 09:00 it is still "running", holding a CI runner all night. Why?</p></q>
+  <answer><p><b>It is waiting for an answer nobody will give.</b> When a run has a permission host (an SDK callback, or <code>--permission-prompt-tool</code> on the CLI), Claude Code waits for that host to answer each request. For unattended runs, use <code>dontAsk</code> mode, so anything not pre-approved is denied at once, or <code>--permission-prompts none</code> on the CLI. And always put a wall-clock limit around the run, so even a bug like this ends.</p></answer>
+</predict>
+
+<predict id="hl-same-branch" minutes="2">
+  <q><p>On a build box, two jobs fire at 02:00 in the same checkout, on the same branch: a dependency bump and a "fix lint warnings" task. The morning's dependency PR contains lint changes, and the lint run's tests failed halfway through. What went wrong?</p></q>
+  <answer><p><b>Two writers shared one working folder.</b> The files, the git index and the branch are shared state. Each agent saw the other's half-finished edits, ran tests against them, and committed whatever was there. Give every run its own worktree and branch. For one job overlapping itself, when a slow run is still going as the next one fires, add a lock or a CI <code>concurrency</code> group.</p></answer>
+</predict>
+
+<predict id="hl-skip-on-laptop" minutes="3">
+  <q><p>Tired of denied calls, you add <code>--dangerously-skip-permissions</code> to a nightly job on your laptop. The task is "read the open issues and fix the easy ones". What is the real risk?</p></q>
+  <hint>Who writes the text of an issue?</hint>
+  <answer><p><b>Anyone who can write an issue can now steer an agent that runs as you, with no checks.</b> Issue text goes into the agent's context. Hidden instructions there ("also run this command") meet a run with your SSH keys, cloud credentials and network access, and no permission check in between. The docs limit this mode to isolated containers or VMs without internet access. Use <code>dontAsk</code> with an allowlist, the sandbox, or a container. More in <a href="#prompt-injection">Prompt injection</a>.</p></answer>
+</predict>
+
+<predict id="hl-null-comment" minutes="3">
+  <q><p>Stretch: your script posts <code>jq -r .result run.json</code> as a comment on the PR. One morning the comment just says <code>null</code>. The run used <code>--max-turns 30</code>. What happened, and what should the script do?</p></q>
+  <hint>Look at the subtype.</hint>
+  <answer><p><b>The run hit the turn limit, and a limit result has no <code>result</code> field.</b> The subtype was <code>error_max_turns</code>, and the process exited non-zero, which the script ignored. Check the exit code and <code>subtype</code> first. On a limit, log the cost and session ID and post nothing, or a short "stopped at the turn limit" note. If it happens often, the task is too big for one run: split it, rather than just raising the limit.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Pick one small, boring task you repeat, such as a weekly dependency report or listing TODOs older than 90 days. Put the prompt in a file and run it from a script with <code>timeout</code>, <code>--max-turns</code>, <code>--max-budget-usd</code>, an allowlist and <code>--output-format json</code>.</li>
+  <li>Run it by hand three times before you schedule it. Read <code>permission_denials</code> and <code>num_turns</code> each time and tighten the prompt or the allowlist.</li>
+  <li>Log subtype, turns and cost for every run. That log is your first evidence for <a href="#measure-yourself">Measure your own loop</a>.</li>
+  <li>Never run unattended in your main checkout, and never with skipped permissions on your laptop.</li>
+</ul>
+<p><b>If someone asks</b> "what's an agent factory?": "It's the same coding agent we already use, started by a script, a schedule or CI, each run in its own worktree. The hard part isn't the AI. It's deciding up front what each run may do and when it must stop, then checking what it produced."</p>
+</atwork>
+
+<fact title="A clock daemon from 1974">
+<p>The cron page in Bell Labs' Sixth Edition Unix manual is dated 25 October 1974. It describes a "clock daemon" that reads one file, <code>/usr/lib/crontab</code>, with six fields per line: minute, hour, day of the month, month, day of the week, then a command for the shell. Your CI still uses those five time fields: GitHub Actions schedules take "POSIX cron syntax". Two details have changed. In 1974 the week ran 1–7 with 1 = Monday; POSIX now says 0–6 with 0 = Sunday. And cron re-read its table once an hour, so "it could take up to an hour for entries to become effective". The Seventh Edition (1979) checked every minute, and its crontab shipped with three jobs. One was <code>calendar</code>, a reminder service whose manual says it ran "daily in the wee hours under control of cron", mailing each user their reminders for today and tomorrow. Work that runs while nobody is at the terminal is as old as Unix. An agent is just a new command in the sixth field.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: headless mode, CLI reference, permission modes, worktrees, sandboxing, GitHub Actions; Agent SDK docs; Codex non-interactive mode docs; GitHub Actions docs; Sixth and Seventh Edition Unix manuals and files, TUHS archive; POSIX crontab).</p>
+
+<recap><ul>
+  <li>An unattended agent is the same loop started by a script, a schedule, CI or a webhook. That is all a "factory" is.</li>
+  <li>Decide everything up front: a fixed prompt, an allowlist with <code>dontAsk</code>, and turn, budget and time limits. Skip permissions only inside an isolated container or VM.</li>
+  <li>Give every run its own worktree and branch, and let your script read the exit code and JSON before it posts anything.</li>
+</ul></recap>
