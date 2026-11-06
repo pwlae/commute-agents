@@ -5,10 +5,10 @@ description: One-time setup of the Commute Agents Linear project from plan/lesso
 Create the Linear project and issues for this course. Run once. Re-running is safe: it
 skips anything that already exists.
 
-1. **Check the workspace.** `list_teams` must show team **PWL** (workspace
-   pwlae-personal-blog). If it doesn't, stop and tell the owner to reconnect the Linear
+1. **Check the workspace.** `list_teams` must show team **COM** (workspace
+   Commute Agents, linear.app/commute-agents). If it doesn't, stop and tell the owner to reconnect the Linear
    connector to that workspace. Never create these issues anywhere else.
-2. **Project.** In team PWL, find or create project **commute-agents**:
+2. **Project.** In team COM, find or create project **commute-agents**:
    "Commute Agents: agentic engineering for product engineers, one commute at a time.
    Site: https://pwlae.github.io/commute-agents/ · Repo: https://github.com/pwlae/commute-agents".
 3. **Issues.** For every lesson in `curriculum.json` that has no `lessons/<id>.html`, and

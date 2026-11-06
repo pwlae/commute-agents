@@ -160,7 +160,7 @@ Predict ids must be unique across the whole course (the build fails otherwise).
 
 ## Loop workflow (Linear, parallel)
 
-Work is tracked in Linear: workspace **pwlae-personal-blog**, team **PWL**, project
+Work is tracked in Linear: workspace **Commute Agents** (linear.app/commute-agents), team **COM**, project
 **commute-agents**. One issue per lesson, titled `Lesson: <title> [<id>]`, plus setup
 issues (e.g. the Part 3 practice system). The issue descriptions come from
 `plan/lessons.md`. Blockers follow each lesson's `requires` in `curriculum.json`, so
