@@ -1,0 +1,112 @@
+<p class="lead">A model remembers nothing between sessions. Everything an agent "remembers" is a file that the harness reads from disk and puts into the context, some at the start of every session and some only when needed. Knowing which is which explains why rules get ignored and what your memory costs.</p>
+
+<h3>The idea</h3>
+<p>Picture a contractor who joins your team fresh every morning with no memory of yesterday. You don't try to make them remember. You leave a note on the desk: how to build, how to test, the one table nobody touches. The long material goes in a binder on the shelf, and they open it only when the task needs it. They read the note every single morning, so it had better be short. And if the note is wrong, they follow it anyway.</p>
+<p>Agent memory works exactly like that:</p>
+<ol>
+  <li><b>The model doesn't learn from your session.</b> Its weights don't change while you chat. As <a href="#tokens">Tokens and the context window</a> showed, all it knows in a session is what is in the window, and a new session starts empty.</li>
+  <li><b>At the start, the harness reads some files from disk</b> and adds their text to the context: the context file (<code>CLAUDE.md</code>, <code>AGENTS.md</code>) and, in some tools, a short index of saved notes.</li>
+  <li><b>Other files load on demand</b>: when the agent starts working in a folder that has its own rules, or when it decides to open a notes file.</li>
+  <li><b>"Saving a memory" is writing a file</b> with the agent's normal file tools. The notes file from the last lesson's <a href="#context-management">fresh-session advice</a> is already memory.</li>
+  <li><b>Next session, the harness reads the files again.</b> That is the whole trick. There is no hidden database inside the model.</li>
+</ol>
+
+<pre class="mermaid" data-alt="Files on disk reach the context window in two ways: the context file and memory index load at the start of every session; folder rules and topic notes load only when the agent needs them. The model can write a new note with a file tool, which goes back to disk for the next session.">
+flowchart TD
+  D["Files on disk"] -- "every session" --> A["Context file<br/>+ memory index"]
+  D -- "only when needed" --> B["Folder rules,<br/>topic notes"]
+  A --> C["Context window"]
+  B --> C
+  C --> M["Agent writes<br/>a note"]
+  M -- "file tool" --> D
+  style A stroke-width:3px
+</pre>
+
+<p>The bold box is the expensive one. Everything in it is in every request of every session, whether the task needs it or not.</p>
+
+<h3>Up close</h3>
+<p>Claude Code is a good example, because its docs spell out what loads when. Other agents follow the same pattern with different file names.</p>
+<table>
+  <tr><th>File</th><th>When it loads</th></tr>
+  <tr><td><code>~/.claude/CLAUDE.md</code> (yours, all projects)</td><td>Every session start</td></tr>
+  <tr><td><code>CLAUDE.md</code> in the folder you start in, and in every folder above it</td><td>Every session start, joined together, outermost first</td></tr>
+  <tr><td>Files imported with <code>@path</code></td><td>With the file that imports them</td></tr>
+  <tr><td><code>CLAUDE.md</code> in a subfolder</td><td>When the agent reads or edits a file in that folder</td></tr>
+  <tr><td>A rule in <code>.claude/rules/</code> with <code>paths:</code></td><td>When the agent works on a matching file</td></tr>
+  <tr><td>Auto memory index, <code>MEMORY.md</code></td><td>Every session start, first 200 lines or 25 KB</td></tr>
+  <tr><td>Auto memory topic files</td><td>When Claude decides to read them</td></tr>
+</table>
+<p>"Auto memory" is notes Claude writes for itself, such as corrections you gave it, in a folder in your home directory, one per repository. It stays on your machine. A path-scoped rule looks like this:</p>
+<pre><code class="language-markdown">---
+paths:
+  - "services/payments/**"
+---
+# Payments
+- Amounts are integers, in pence.
+- Call providers through lib/psp,
+  never with raw HTTP.
+</code></pre>
+<p>Two details matter. First, the context file is not a setting. Claude Code adds it as a message after the system prompt, and the model reads it like any other text: a strong hint, never a guarantee. Second, <code>@path</code> imports don't save anything. They tidy a long file, but the imported text loads with it.</p>
+<p><code>AGENTS.md</code> is the shared, tool-neutral version of the same idea, now stewarded by a Linux Foundation project and read by Codex, Cursor, Gemini CLI, GitHub Copilot's coding agent and many others. Codex reads one from <code>~/.codex</code>, then one from each folder from the repository root down to where you started, joins them, and stops adding files at 32 KiB by default. Recent versions of Claude Code read <code>AGENTS.md</code> when a project has no <code>CLAUDE.md</code>, and a <code>CLAUDE.md</code> can import it with <code>@AGENTS.md</code>.</p>
+<p>Anthropic's API offers the same idea as a "memory tool": the model asks to view or create files under <code>/memories</code>, and your code stores them wherever you like. Memory, again, is files.</p>
+
+<h3>What memory costs</h3>
+<p>Say your context file has 2,000 lines, at about 12 tokens a line (a 50-character line ÷ 4). Compare it with a 150-line file:</p>
+<table>
+  <tr><th></th><th>2,000 lines</th><th>150 lines</th></tr>
+  <tr><td>Tokens in every request</td><td>≈ 24,000</td><td>≈ 1,800</td></tr>
+  <tr><td>First request of each session, at full price</td><td>24,000</td><td>1,800</td></tr>
+  <tr><td>Each later step, cached at ~0.1</td><td>≈ 2,400</td><td>≈ 180</td></tr>
+  <tr><td>Your "use lib/psp" rule is</td><td>1 line of 2,000</td><td>1 line of 150</td></tr>
+</table>
+<p><a href="#prompt-caching">Prompt caching</a> makes the money part smaller than it looks, because the file sits near the start and doesn't change. The real cost is the last row. Claude Code's docs target under 200 lines per file, because "longer files consume more context and reduce adherence". If two lines contradict each other, the model may follow either one.</p>
+<p>Stale memory is worse still. The agent treats the file as true. A wrong line doesn't just waste tokens; it sends the agent confidently in the wrong direction, where without it the agent would have looked at the code.</p>
+
+<h3>Your turn</h3>
+<predict id="mem-new-session" minutes="2">
+  <q><p>Yesterday you spent an hour walking the agent through the refunds service. Today, in a new session, it asks the same questions again. Is something broken?</p></q>
+  <answer><p><b>No, that's how it works.</b> The model learned nothing from yesterday. The conversation is gone, and only files survive. Next time, before you close a long session, ask the agent to write the key findings to a file (a few lines in the context file, or a notes file it can open), and check what it wrote.</p></answer>
+</predict>
+
+<predict id="mem-buried-rule" minutes="2">
+  <q><p>Your <code>CLAUDE.md</code> is 1,800 lines. Line 1,240 says "call payment providers through the <code>lib/psp</code> client". The agent writes raw HTTP calls with its own retries anyway. The file did load. Why was the rule ignored?</p></q>
+  <answer><p><b>It was there, but buried.</b> One line among 1,800 competes with everything else for the model's attention, and long files reduce adherence. Trim the file, and move the rule into a path-scoped rule for the payments folder, so it appears right when the agent touches that code. If the rule really matters, make it a check: a lint rule that fails on raw HTTP calls (see <a href="#unwritten-rules">Turn unwritten rules into checks</a>).</p></answer>
+</predict>
+
+<predict id="mem-subfolder" minutes="2">
+  <q><p>You add <code>services/billing/CLAUDE.md</code> with billing rules. You start Claude Code at the repository root and ask "what are our billing rules?" before it has opened any billing file. It doesn't know. Why?</p></q>
+  <answer><p><b>Subfolder files load on demand.</b> Claude Code reads a subfolder's <code>CLAUDE.md</code> only once the agent reads or edits a file in that folder. That is the point: billing rules cost nothing while you work on search. Ask it to open a billing file first, or move rules that apply everywhere into the root file.</p></answer>
+</predict>
+
+<predict id="mem-split-imports" minutes="2">
+  <q><p>A teammate splits the 2,000-line <code>CLAUDE.md</code> into ten topic files and imports each one with <code>@docs/…</code>. "Now it's 20 lines." Is the context smaller?</p></q>
+  <answer><p><b>No.</b> Imported files load together with the file that imports them, so every request still carries all 2,000 lines. To save tokens, the detail must load only when needed: path-scoped rules, subfolder files, or a plain mention without <code>@</code> ("for migrations, read <code>docs/migrations.md</code>") that the agent opens only when the task calls for it.</p></answer>
+</predict>
+
+<predict id="mem-stale-command" minutes="3">
+  <q><p>Stretch: the context file says "run tests with <code>make test</code>". Three months ago the team moved to <code>just test</code> and deleted the Makefile target. The agent fails a few times, then "fixes" the problem by adding a <code>test</code> target back to the Makefile. Why is this worse than having no line at all?</p></q>
+  <hint>Without the line, where would the agent have looked?</hint>
+  <answer><p><b>The agent trusts memory over the repository.</b> With no line, it would have looked at the <code>justfile</code> or the CI config and found the real command. The stale line sent it confidently the wrong way, and it changed the code to match the note. Fix the line, review the context file in pull requests like code, and prefer pointing at the source of truth ("CI runs the tests, see <code>.github/workflows/ci.yml</code>") over copying details that will drift.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Count your context file: <code>wc -l CLAUDE.md</code> (or <code>AGENTS.md</code>). In Claude Code, <code>/context</code> lists what loaded. Aim for under about 200 lines.</li>
+  <li>Move detail that matters for one area into files that load on demand: a subfolder context file, a path-scoped rule, or a doc the main file mentions without importing.</li>
+  <li>Delete what the agent can find itself (folder trees, dependency lists) and every line that is no longer true. Review the file in pull requests, like code.</li>
+  <li>At the end of a long task, ask the agent to write what it learned to a file, and read it before you keep it.</li>
+</ul>
+<p><b>If someone asks</b> "does the AI remember our project?": "No. The model starts blank every session; the tool re-reads a few text files from the repo and puts them in the prompt. So its memory is just files, and it believes whatever they say, which is why we keep them short, current and reviewed."</p>
+</atwork>
+
+<fact title="Context as RAM, storage as disk">
+<p>In October 2023, Charles Packer and colleagues at UC Berkeley published "MemGPT: Towards LLMs as Operating Systems". They treated the context window like a computer's RAM (the paper calls it "main context") and outside storage like disk ("external context"). The model moved data between the two itself, with function calls: saving facts to an archive, searching old messages, editing a small "working context" block. When the context got close to full, the system sent the model a "memory pressure" warning, so it could save what mattered before old messages were evicted and replaced with a running summary. They tested it on documents far bigger than the window, and on chat agents that remember across sessions. In 2024 the project became a company, Letta. Today's coding agents use a plainer version of the same design: a short index that is always loaded, and topic files read on demand.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: memory; agents.md; OpenAI Codex docs: AGENTS.md; Anthropic API docs: memory tool; Packer et al., 2023).</p>
+
+<recap><ul>
+  <li>The model remembers nothing. "Memory" is files the harness reads into the context, and saving a memory is writing a file.</li>
+  <li>Some files load every session, others only when the agent works in that area. Always-loaded lines cost room and attention on every request.</li>
+  <li>Keep the always-loaded file short and true, move detail to files loaded on demand, and turn must-follow rules into checks.</li>
+</ul></recap>
