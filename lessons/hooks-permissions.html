@@ -1,0 +1,145 @@
+<p class="lead">A line in CLAUDE.md is a request the model follows most of the time. A permission rule or a hook is code the harness runs on every tool call, step 3 or step 300, so the rules you can't afford to see broken belong there.</p>
+
+<h3>The idea</h3>
+<p>Picture a new joiner on day one. You tell them "never push straight to main". They nod, and they mean it. Three weeks later, in a hurry at 6 pm, they push to main. That's why the repository has branch protection: the server refuses the push, however busy or tired the person is.</p>
+<p>An agent is that new joiner, with a worse memory. Your instruction is one paragraph among thousands of tokens of code, logs and tool results, and it competes with the task in front of it. Most of the time the model follows it. "Most of the time" is fine for style and bad for anything that breaks production.</p>
+<p>Recall from <a href="#agent-loop">An agent is a while loop</a> that the model only <em>writes</em> a tool call; the harness runs it. So the harness can check every call before and after it runs, and that check doesn't depend on what the model remembers. Claude Code gives you two such checks:</p>
+<ol>
+  <li><b>Permission rules</b>: patterns in a settings file that allow, ask about or deny a tool call. No code needed.</li>
+  <li><b>Hooks</b>: your own scripts that the harness runs at fixed points, such as just before a tool call (<code>PreToolUse</code>) or just after one (<code>PostToolUse</code>). The script reads the call as JSON and decides.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The path of one tool call through Claude Code, top to bottom. The model writes a tool call. PreToolUse hooks run first; a hook that exits with code 2 blocks the call and its message goes back to the model. Then permission rules are checked: deny blocks the call, ask prompts you, allow lets it run. The tool runs, then PostToolUse hooks run, and the result plus any hook feedback goes back to the model.">
+flowchart TD
+  A["Model writes<br/>a tool call"] --> B{"PreToolUse<br/>hooks"}
+  B -- "exit 2" --> X["Blocked: reason<br/>sent to the model"]
+  B -- "exit 0" --> C{"Permission<br/>rules"}
+  C -- deny --> X
+  C -- ask --> P["You approve<br/>or refuse"]
+  C -- allow --> D["Tool runs"]
+  P -- yes --> D
+  D --> E["PostToolUse hooks:<br/>lint, format, check"]
+  E --> F["Result + feedback<br/>to the model"]
+  style B stroke-width:3px
+  style C stroke-width:3px
+</pre>
+
+<p>Claude Code's permission docs say it plainly: rules are enforced by Claude Code, not by the model, and instructions in your prompt or CLAUDE.md "don't change what Claude Code allows".</p>
+
+<h3>Up close</h3>
+<p><b>Permission rules</b> live in <code>.claude/settings.json</code> (commit it, and the whole team gets them) or in your personal settings:</p>
+<pre><code class="language-json">{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(git commit *)"
+    ],
+    "deny": [
+      "Bash(git push *)",
+      "Read(./.env)"
+    ]
+  }
+}
+</code></pre>
+<p>Rules are checked in a fixed order: <b>deny, then ask, then allow</b>, and the first match wins. A deny always beats an allow, however specific the allow is. Your organisation can also push managed settings that no project or user file can override.</p>
+<p><b>Hooks</b> handle what a pattern can't express. Say your team's rule is "never edit a migration that's already committed; write a new one". A folder pattern can't tell old files from new ones, but a ten-line script can:</p>
+<pre><code class="language-bash">#!/bin/bash
+# hooks/mig.sh: runs before each edit
+f=$(jq -r '.tool_input.file_path')
+case "$f" in
+  */migrations/*) ;;
+  *) exit 0 ;;
+esac
+# a file git doesn't track is new: OK
+git ls-files --error-unmatch "$f" \
+  >/dev/null 2>&1 || exit 0
+echo "Blocked: $f is committed and" \
+  "may already have run. Write a" \
+  "new migration instead." >&2
+exit 2
+</code></pre>
+<p>Register it under <code>"hooks"</code> in the same settings file. The matcher picks which tools trigger it:</p>
+<pre><code class="language-json">"PreToolUse": [{
+  "matcher": "Edit|Write",
+  "hooks": [{
+    "type": "command",
+    "command":
+    "$CLAUDE_PROJECT_DIR/hooks/mig.sh"
+  }]
+}]
+</code></pre>
+<p>The exit code is the whole contract:</p>
+<ul>
+  <li><b>Exit 0</b>: no objection. The call carries on to the permission rules.</li>
+  <li><b>Exit 2</b>: block. Whatever the script wrote to stderr goes back to the model as the reason, so it can change course. Write it like a good tool error (see <a href="#tool-calls">Tool calls up close</a>): say what to do instead.</li>
+  <li><b>Any other code</b>: a non-blocking error. You see a "hook error" notice and the call goes ahead.</li>
+</ul>
+<p>A <code>PostToolUse</code> hook runs after the tool, so it can't stop anything; the edit has already happened. Its job is feedback. Claude Code's hooks guide uses exactly this as an example: run Prettier on every file the agent edits, so formatting is never a review comment. A lint hook works the same way, and exit 2 puts the linter's complaints in front of the model right after the edit:</p>
+<pre><code class="language-bash">#!/bin/bash
+# hooks/lint.sh: runs after each edit
+f=$(jq -r '.tool_input.file_path')
+case "$f" in *.py) ;; *) exit 0 ;; esac
+ruff check "$f" >&2 || exit 2
+</code></pre>
+<p>There is also a <code>Stop</code> hook, which runs when the agent tries to finish. Exit 2 there sends it back to work, for example while the tests are red.</p>
+<p>Two warnings. Hooks run as you, with your full user permissions, so review a repository's hooks like any script before you trust it. And a hook on <code>Edit|Write</code> doesn't see files changed by a shell command or a Python script. Other harnesses have the same idea under other names: Cursor has <code>beforeShellExecution</code> and <code>afterFileEdit</code> hooks, and Gemini CLI has <code>BeforeTool</code> and <code>AfterTool</code>, where exit 2 also blocks.</p>
+
+<h3>Where a rule should live</h3>
+<table>
+  <tr><th>Written as</th><th>Enforced by</th><th>What slips past</th></tr>
+  <tr><td>A line in CLAUDE.md</td><td>The model, when it remembers</td><td>Anything, on a bad day</td></tr>
+  <tr><td>Permission rule</td><td>Harness, every call</td><td>Commands written another way</td></tr>
+  <tr><td>Hook</td><td>Harness, your logic</td><td>Tools the hook doesn't watch</td></tr>
+  <tr><td>CI check, branch protection</td><td>The server</td><td>Nothing the agent can reach</td></tr>
+</table>
+<p>Use all four. CLAUDE.md explains <em>why</em>, so the agent rarely hits the wall. Hooks and rules catch it fast, while the file is still in its context. CI catches whatever got past your laptop.</p>
+
+<h3>Your turn</h3>
+<predict id="hook-claude-md-migration" minutes="2">
+  <q><p>Your CLAUDE.md says "Never edit existing migrations." Two hours into a long session, asked to fix a column type, the agent edits <code>V12__orders.sql</code>, which already ran in production. Did it ignore you, and what would have stopped it?</p></q>
+  <answer><p><b>It didn't ignore you. It weighed your sentence against the task and lost.</b> An instruction is one paragraph among a lot of context, and "fix the column type" pointed right at that file. A <code>PreToolUse</code> hook on <code>Edit|Write</code> would have blocked the edit every time, and its stderr ("write a new migration instead") tells the agent exactly what to do next. Keep the CLAUDE.md line too: it explains why, so the agent usually gets it right first.</p></answer>
+</predict>
+
+<predict id="hook-lint-exit-1" minutes="2">
+  <q><p>A teammate adds a <code>PostToolUse</code> hook that runs the linter after each edit. On lint errors the script ends with <code>exit 1</code>. You see "hook error" notices in the session, but the agent never fixes the lint errors. Why?</p></q>
+  <answer><p><b>Exit 1 is a non-blocking error.</b> Claude Code shows you a notice and carries on; the linter's output doesn't come back to the model as feedback. Exit 2 is the code that sends stderr to the model. Change it, and print the errors to stderr: the agent then fixes them right after each edit, while the file is still fresh, instead of you finding them in CI.</p></answer>
+</predict>
+
+<predict id="hook-post-too-late" minutes="2">
+  <q><p>To keep the agent away from <code>.env</code>, you write a <code>PostToolUse</code> hook on <code>Edit|Write</code> that exits 2 when the path ends in <code>.env</code>. The agent then edits <code>.env</code> anyway, and the file really changes. What went wrong?</p></q>
+  <answer><p><b>Post means after: the edit had already happened.</b> A <code>PostToolUse</code> hook can only report back to the model; it can't undo the tool. To stop an action, use a <code>PreToolUse</code> hook or, simpler here, a deny rule such as <code>Read(./.env)</code>, which also blocks editing that file.</p></answer>
+</predict>
+
+<predict id="hook-deny-whole-folder" minutes="3">
+  <q><p>You add the deny rule <code>Edit(db/migrations/**)</code> to protect old migrations. The next day the agent can't finish a ticket that needs a new column. Why, and what's better?</p></q>
+  <hint>What does the pattern know about each file?</hint>
+  <answer><p><b>The rule blocks the whole folder, including the new file the ticket needs.</b> A permission rule only sees the tool and the path. "Old" versus "new" is a fact about git history, and checking it takes code. A hook can run <code>git ls-files</code>, let new files through and block committed ones, with a message that says "write a new migration instead". Use rules for "never touch this", and hooks for "touch this only when…".</p></answer>
+</predict>
+
+<predict id="hook-push-another-way" minutes="3">
+  <q><p>Stretch: you deny <code>Bash(git push *)</code>. The agent's push is blocked, and a few steps later it runs <code>git -C . push origin main</code>, which goes through. Is the rule broken?</p></q>
+  <hint>What exactly does a Bash rule match?</hint>
+  <answer><p><b>No, it works as documented.</b> A Bash rule matches the command text the model writes, and Claude Code's docs list <code>git -C . push</code> as one of the forms <code>Bash(git push *)</code> doesn't stop. They say such rules aren't a security boundary around the program. Rules and hooks catch the usual mistakes cheaply. For a rule that must hold, put it where the agent can't reach: branch protection on the server, the CI pipeline, or Claude Code's sandbox, which limits files and network at the operating-system level.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Find one thing you've told the agent more than twice ("run the formatter", "don't touch the generated client"). Turn it into a hook or a deny rule tonight.</li>
+  <li>Commit the hooks and rules in <code>.claude/settings.json</code>, so teammates get them too. Settings on your laptop protect only your laptop.</li>
+  <li>Make each block message say what to do instead. The agent reads it and adapts.</li>
+  <li>Keep the same check in CI. Anything local can be switched off.</li>
+</ul>
+<p><b>If someone asks</b> "why not just put the rule in the prompt?": "A prompt is a request the model weighs against everything else in its context, so it holds most of the time. A hook or permission rule is code the harness runs on every tool call, so it holds every time, and the rules that matter belong there."</p>
+</atwork>
+
+<fact title="Yelp's copy-pasted bash scripts">
+<p>Git has long supported "hooks": scripts in <code>.git/hooks</code> that fire at fixed points, such as <code>pre-commit</code>, which can abort a commit by exiting non-zero. Sharing them was painful, because that folder isn't part of what you commit. In March 2014 two Yelp engineers, Anthony Sottile and Ken Struys, started the pre-commit framework. Its 2014 README explained why: "At Yelp we rely heavily on pre-commit hooks", so reviewers can look at the architecture of a change instead of trivial errors, but "we copied and pasted bash scripts from project to project". pre-commit turned hooks into a config file in the repo, and the project now has over 15,000 stars on GitHub. Git's own manual notes the catch: the pre-commit hook "can be bypassed with the --no-verify option". That's why teams run the same checks again in CI, and why your agent's hooks need a CI twin too.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: hooks guide, hooks reference, permissions; Cursor hooks docs; Gemini CLI hooks reference; git-scm githooks; pre-commit README, 2014).</p>
+
+<recap><ul>
+  <li>An instruction is a request the model weighs. A permission rule or hook is code the harness runs on every tool call.</li>
+  <li>Permission rules: deny, then ask, then allow, first match wins. Hooks: <code>PreToolUse</code> can block (exit 2, reason on stderr); <code>PostToolUse</code> runs after and gives feedback, such as lint and format.</li>
+  <li>Keep the rule's reason in CLAUDE.md, the check in a hook, and a copy in CI, where the agent can't switch it off.</li>
+</ul></recap>
