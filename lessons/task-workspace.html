@@ -1,0 +1,158 @@
+<p class="lead">Give every task its own folder: a git worktree of each repository it touches, a short brief, and its own agent session. Tasks stop leaking into each other, you can run several at once, and cleaning up takes one command.</p>
+
+<h3>The idea</h3>
+<p>Picture a kitchen with one chopping board. You're halfway through the onions when someone asks for a fruit salad. You can push the onions to one side and hope, or you can take a second board. A second board costs almost nothing. A salad that tastes of onion costs a lot.</p>
+<p>Most of us give agents one board: the clone in <code>~/src/payments</code>, where we also switch branches, stash and run tests. That works for one task at a time. It breaks as soon as there are two, or when one ticket spans three repositories. The fix is a folder per task:</p>
+<ol>
+  <li><b>One folder per ticket</b>, such as <code>~/tasks/PAY-123/</code>.</li>
+  <li><b>Inside it, a worktree of every repo the ticket touches</b>, all on a branch named after the ticket. A worktree is a second working folder for a repository you already have (more below).</li>
+  <li><b>A short brief</b>, <code>BRIEF.md</code>: the goal, the repos, what "done" means, what is out of scope. <a href="#context-files">Context files that earn their tokens</a> covers what goes in it.</li>
+  <li><b>One agent session, started in that folder.</b> It sees the three repos and the brief, and nothing from your other work.</li>
+  <li><b>When the pull requests merge</b>, remove the worktrees and delete the folder.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The life of one task, top to bottom: ticket PAY-123 arrives. A script creates the folder tasks/PAY-123 with worktrees of orders, payments and contracts on branch PAY-123, plus a brief. One agent session starts in that folder. The work ends as one pull request per repository, all on the same branch name. A cleanup script removes the worktrees and the folder.">
+flowchart TD
+  T["Ticket PAY-123"] --> S["Script makes<br/>~/tasks/PAY-123/"]
+  S --> F["Worktrees: orders,<br/>payments, contracts<br/>on branch PAY-123<br/>+ BRIEF.md"]
+  F --> A["One agent session,<br/>started in the folder"]
+  A --> P["One PR per repo,<br/>same branch name"]
+  P --> C["Remove worktrees,<br/>delete the folder"]
+  style A stroke-width:3px
+</pre>
+
+<p>You get three things. <b>Clean context</b>: the session holds one task, as <a href="#context-management">Context management</a> recommends. <b>Parallel work</b>: two folders never share files or a branch, so two agents (or you and one agent) don't collide. <b>Easy cleanup</b>: when the task ends, its folder goes, and nothing is left behind in your main clone.</p>
+
+<h3>Up close</h3>
+<p>A clone copies the whole history. A worktree only adds another set of files for a repository you already have. Every worktree of a repo shares one <code>.git</code> store; each has its own checkout:</p>
+<table>
+  <tr><th>Shared by all worktrees</th><th>Separate in each</th></tr>
+  <tr><td>Commits and history</td><td>The files on disk</td></tr>
+  <tr><td>Branches, tags, remotes, config</td><td><code>HEAD</code> (the checked-out branch) and the index (staging area)</td></tr>
+</table>
+<p>So a commit made in <code>~/tasks/PAY-123/payments</code> is at once visible from <code>~/src/payments</code>, and a new worktree is quick to make, because no history is copied. Inside a worktree, <code>.git</code> is a one-line file that points back to the main repository.</p>
+<p>Four rules from the git docs:</p>
+<ul>
+  <li><b>One branch, one worktree.</b> By default, git refuses to check out a branch that another worktree already has. Give each task its own branch.</li>
+  <li><b><code>git worktree list</code></b> shows every worktree of a repo and its branch.</li>
+  <li><b><code>git worktree remove</code></b> deletes the folder, but only if it is clean: no changed or untracked files. Otherwise it refuses, unless you add <code>--force</code>.</li>
+  <li><b>If you delete the folder by hand</b>, git keeps a stale record of it. <code>git worktree prune</code> clears it; git also expires it on its own later.</li>
+</ul>
+<pre><code class="language-bash">cd ~/src/payments
+# new branch, starting from main
+git worktree add -b PAY-123 \
+  ~/tasks/PAY-123/payments \
+  origin/main
+git worktree list
+# later; refuses if work is unsaved
+git worktree remove \
+  ~/tasks/PAY-123/payments
+</code></pre>
+
+<h3>Where the session starts</h3>
+<p>Claude Code has worktrees built in, for one repo: <code>claude -w fix-auth</code> creates <code>.claude/worktrees/fix-auth/</code> inside the repo, on a new branch <code>worktree-fix-auth</code>, and starts the session there. Use it for one-repo tasks. It can't span three repos, so for those you build the folder yourself and start the agent in it.</p>
+<p>What loads, in Claude Code: a <code>CLAUDE.md</code> in the folder you start in loads at once. Each repo's own <code>CLAUDE.md</code> loads the first time the agent reads or edits a file in that repo. The alternative, starting in one repo and adding the others with <code>--add-dir</code>, grants file access, but by default doesn't load the added repos' <code>CLAUDE.md</code> or most of their <code>.claude/</code> config.</p>
+
+<h3>Worked example</h3>
+<p>One day, four folders:</p>
+<table>
+  <tr><th>When</th><th>Folder</th><th>What happens</th></tr>
+  <tr><td>09:00</td><td><code>PAY-123</code></td><td>You and an agent add a refund field across orders, payments and contracts</td></tr>
+  <tr><td>11:00</td><td><code>INC-88</code></td><td>A hotfix in payments, from fresh main. PAY-123 is untouched, mid-edit</td></tr>
+  <tr><td>14:00</td><td><code>PAY-130</code></td><td>An unattended run (<a href="#headless">Running agents without you</a>) on a small ticket</td></tr>
+  <tr><td>17:00</td><td><code>INC-88</code></td><td>Merged. Worktree removed, folder gone</td></tr>
+</table>
+<p>At 11:00, payments has three worktrees on three branches: your clone on <code>main</code>, <code>PAY-123</code> and <code>INC-88</code>. No stash, no branch switch, and nobody's half-finished edits in anyone else's tests.</p>
+
+<h3>At your laptop</h3>
+<p>Two small scripts. This one assumes your clones live in <code>~/src/</code>. Save it as <code>newtask</code> on your <code>PATH</code>:</p>
+<pre><code class="language-bash">#!/bin/bash
+# newtask PAY-123 orders payments
+set -euo pipefail
+id="$1"; shift
+task="$HOME/tasks/$id"
+mkdir -p "$task"
+for repo in "$@"; do
+  src="$HOME/src/$repo"
+  git -C "$src" fetch -q origin
+  git -C "$src" worktree add -q \
+    --no-track -b "$id" \
+    "$task/$repo" origin/HEAD
+done
+cat &gt; "$task/BRIEF.md" &lt;&lt;EOF
+# $id
+Goal:
+Repos: $*
+Done when:
+Out of scope:
+EOF
+echo "@BRIEF.md" &gt; "$task/CLAUDE.md"
+echo "cd $task &amp;&amp; claude"
+</code></pre>
+<ul>
+  <li><code>origin/HEAD</code> is the remote's default branch, so every task starts from fresh main, whatever your clone has checked out.</li>
+  <li><code>--no-track</code> stops the new branch tracking main. Push it the first time with <code>git push -u origin PAY-123</code>.</li>
+  <li>The one-line <code>CLAUDE.md</code> imports the brief, so every session in the folder starts with it, even tomorrow's.</li>
+</ul>
+<p>And <code>donetask</code>, for when the pull requests merge. It stops at the first worktree with unsaved work:</p>
+<pre><code class="language-bash">#!/bin/bash
+# donetask PAY-123
+set -euo pipefail
+task="$HOME/tasks/$1"
+for wt in "$task"/*/; do
+  git -C "$wt" worktree remove .
+done
+rm "$task/BRIEF.md" "$task/CLAUDE.md"
+rmdir "$task"
+</code></pre>
+<p>Try it on a real ticket: run <code>newtask</code>, spend two minutes on the brief, then start the agent in the folder. A worktree is a fresh checkout, so install dependencies and copy any <code>.env</code> there first. The branches stay after cleanup; delete them with <code>git branch -d</code> once merged.</p>
+
+<h3>Your turn</h3>
+<predict id="tw-hotfix-same-checkout" minutes="2">
+  <q><p>An agent is working on PAY-123 in <code>~/src/payments</code>. A production bug comes in. In another terminal, in the same folder, you run <code>git stash</code>, switch to a new <code>hotfix</code> branch, fix the bug and run the tests. Back in the agent's session, its tests now fail on code it never wrote, and its next commit lands on <code>hotfix</code>. Why?</p></q>
+  <answer><p><b>One checkout has one set of files, one current branch and one index, and you changed all three under the agent.</b> It doesn't know you switched; it just sees different files. Your stash also took its half-done edits. Put the hotfix in its own worktree, from <code>origin/main</code>, and the agent's folder never changes.</p></answer>
+</predict>
+
+<predict id="tw-three-repos" minutes="2">
+  <q><p>Refunds over £1,000 fail. The amount is rounded in <code>orders</code>, checked in <code>payments</code>, and the event schema lives in <code>contracts</code>. You start the agent in <code>~/src/payments</code>. It "fixes" the bug by making payments accept both rounded and unrounded amounts. Why that fix, and what setup would get a better one?</p></q>
+  <answer><p><b>It could only see and change payments, so it patched the symptom where it stood.</b> The cause is upstream, in orders and the shared schema. Make a task folder with worktrees of all three repos on one branch, list them in the brief, and start the session there. Now it can trace the amount end to end and fix the rounding where it happens, with one PR per repo.</p></answer>
+</predict>
+
+<predict id="tw-branch-busy" minutes="2">
+  <q><p>To look at main without disturbing your clone, you run <code>git worktree add ~/tasks/look/payments main</code>. Git refuses: <code>main</code> is already used by the worktree at <code>~/src/payments</code>. Why does git forbid this, and what do you do instead?</p></q>
+  <answer><p><b>Branches are shared, but files and index are not.</b> If two worktrees had <code>main</code> checked out, a commit in one would move the branch while the other's files stayed at the old commit, and its next commit would quietly undo the change. So a branch can be checked out in only one worktree at a time. Use <code>--detach</code> to look without a branch, or <code>-b</code> to start a new one from <code>origin/main</code>.</p></answer>
+</predict>
+
+<predict id="tw-rm-rf" minutes="3">
+  <q><p>PAY-123 was done, so you ran <code>rm -rf ~/tasks/PAY-123</code>. A week later QA reopens it, and adding the worktree again fails: the path is "a missing but already registered worktree". What's going on, and did you lose anything?</p></q>
+  <hint>Where does git keep its record of each worktree?</hint>
+  <answer><p><b>The main repository still has a record of the worktree; you only deleted its files.</b> <code>git worktree list</code> marks it "prunable", and <code>git worktree prune</code> clears it. The branch and its commits are safe, because they live in the shared repository: add the worktree again from the existing branch (without <code>-b</code>, since the branch exists). Anything uncommitted in the folder is gone. That's why <code>git worktree remove</code> refuses to delete a folder with unsaved work.</p></answer>
+</predict>
+
+<predict id="tw-hooks-missing" minutes="3">
+  <q><p>Stretch: the payments repo commits a <code>.claude/settings.json</code> with a hook that runs the formatter after every edit and rules that block reading <code>.env</code>. In your <code>~/tasks/PAY-123</code> session, edits in <code>payments/</code> come out unformatted. Why?</p></q>
+  <hint>Which folder did the session start in?</hint>
+  <answer><p><b>Claude Code reads the shared project settings from the folder where the session starts</b>, which is the task folder, not the repo. So the repo's hooks and permission rules don't apply there, while its <code>CLAUDE.md</code> still loads when the agent touches the repo. Have your script write a <code>.claude/settings.json</code> into the task folder with the hooks and rules you rely on, and check once that the hook fires.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Start your next ticket in its own folder: <code>~/tasks/&lt;ticket&gt;/</code>, a worktree of each repo it touches on one branch, a five-line brief, a fresh session.</li>
+  <li>Never start a second task in a checkout an agent is using. New task, new folder, new session.</li>
+  <li>Clean up with <code>git worktree remove</code>, not <code>rm -rf</code>, so unsaved work can't vanish. Glance at <code>git worktree list</code> now and then for leftovers.</li>
+  <li>If you rely on a repo's hooks or permission rules, check they still apply in a session started in the task folder.</li>
+</ul>
+<p><b>If someone asks</b> "how do you run several agents without them clashing?": "Each task gets its own folder, with a git worktree of every repo it touches on one branch and a short brief. Each agent starts in its own folder, so they never share files, and when the PRs merge the folder goes."</p>
+</atwork>
+
+<fact title="Eight years in contrib">
+<p>In March 2007, Julian Phillips added a small script to Git's <code>contrib/</code> folder of unofficial extras: <code>git-new-workdir</code>, based on maintainer Junio Hamano's description of how he kept several working folders for one repository. It used symbolic links into the main <code>.git</code> folder. The commit message quoted Junio's warning: it "risks confusion for an uninitiated if you update a ref that is checked out in another working tree". Git 2.5, announced on 27 July 2015, shipped <code>git worktree</code> as "a replacement for contrib/workdir/git-new-workdir that does not rely on symbolic links", one that made sharing "safer by making the borrowee and borrowers aware of each other". That awareness is why git refuses to check out one branch in two worktrees: it closes the very confusion Junio warned about. The release notes still called it experimental, with an interface "still likely to change". GitHub's blog post that week said the old script had "never made it to mainstream because it was non-portable and somewhat fiddly".</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (git-scm git-worktree docs; Git 2.5.0 release notes and announcement; GitHub blog, July 2015; Git commit 4f01748, March 2007; Claude Code docs: worktrees, CLI reference, memory, settings, permissions).</p>
+
+<recap><ul>
+  <li>One task, one folder: a worktree of every repo it touches on one branch, a short brief, and its own agent session.</li>
+  <li>Worktrees share history and branches, but each has its own files, current branch and index. A branch lives in one worktree at a time.</li>
+  <li>Clean up with <code>git worktree remove</code>, which protects unsaved work. After an <code>rm -rf</code>, run <code>git worktree prune</code>.</li>
+</ul></recap>
