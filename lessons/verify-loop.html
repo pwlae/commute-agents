@@ -1,0 +1,146 @@
+<p class="lead">When an agent says "done", it means the work looks done to the model. Write in the brief what done means, give the agent one fast <code>verify</code> script that runs the tests, starts the service and calls it, and ask for the output, not the claim.</p>
+
+<h3>The idea</h3>
+<p>A plumber says "all fixed". You'd still like to see the tap run and the floor under the sink stay dry. "I fitted the pipe" is not "the water flows", and a good plumber shows you without being asked.</p>
+<p>An agent's "done" has the same gap. The loop ends when the model replies without a tool call (see <a href="#agent-loop">The agent loop</a>), and the model replies like that when the work looks finished. If it has nothing to run that says pass or fail, "looks finished" is all it has, and you become the test suite. So close the gap in four steps:</p>
+<ol>
+  <li><b>Write "Done when" in the brief</b>: the commands to run and what they must show. Not "refunds work", but "this request returns 201 and this test passes".</li>
+  <li><b>Put the commands in one script</b>, <code>./verify</code>, that ends with a clear pass or fail. One command is easy to say in a brief and easy to enforce.</li>
+  <li><b>Make it fast.</b> The agent runs it after every change, reads what failed, fixes it and runs it again.</li>
+  <li><b>Ask for evidence</b>: the command it ran and the output, pasted into its final message and the PR.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The verify loop, top to bottom: the brief says what done means. The agent edits the code, then runs the verify script. If it fails, the agent reads the output and edits again. If it passes, the agent pastes the command and its output, and you read that evidence instead of the claim.">
+flowchart TD
+  A["Brief: Done when…"] --> B["Agent edits code"]
+  B --> C["Runs ./verify"]
+  C -->|red| B
+  C -->|green| D["Pastes the command<br/>and its output"]
+  D --> E["You read evidence,<br/>not a claim"]
+  style C stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p>Not every kind of proof proves the same thing. Each rung catches mistakes the one below misses:</p>
+<table>
+  <tr><th>Evidence</th><th>Proves</th><th>Misses</th></tr>
+  <tr><td>Builds, lint clean</td><td>The code is well-formed</td><td>Whether it does the right thing</td></tr>
+  <tr><td>"All tests pass"</td><td>Nothing that is tested broke</td><td>The new behaviour, if no test touches it</td></tr>
+  <tr><td>A new test, red before and green after</td><td>The change does what the test says</td><td>Wiring: config, migrations, startup</td></tr>
+  <tr><td>Service started, real request answered</td><td>It works end to end on your laptop</td><td>Production data and load</td></tr>
+</table>
+<p>Agents often stop at the second rung, and it's the one that misleads most. "312 tests pass" is true even when none of them runs the line that changed. Two cheap fixes. Ask for the test first, and for its failing output before the fix: a test that never failed may not test anything. And measure <b>diff coverage</b>: of the lines this change touched, how many did the tests run? The open-source <code>diff-cover</code> reads a normal coverage report and compares it with <code>git diff</code> against <code>origin/main</code>.</p>
+<p>The top rung needs the service to start on your laptop. If it can't, that is a setup gap to fix, not a step to skip: a <code>docker compose</code> file with the database, the broker and seed data. Part 3 builds one for a whole practice system.</p>
+<p>A brief with a definition of done, building on the <code>BRIEF.md</code> from <a href="#task-workspace">One folder per task</a>:</p>
+<pre><code class="language-markdown">Goal: refunds take a reason code.
+Done when:
+- ./verify passes; paste its output
+- new test, shown failing first:
+  POST /refunds without a reason
+  returns 422
+- POST tests/smoke/refund.json
+  returns 201 with the reason
+- no existing test edited or skipped
+</code></pre>
+
+<h3>Making it stick</h3>
+<p>A line in the brief is still a request. To make it a rule, use a <code>Stop</code> hook, which <a href="#hooks-permissions">Hooks and permissions</a> introduced: Claude Code runs it whenever the agent tries to end its turn, and exit 2 sends the agent back to work with your stderr as the reason.</p>
+<pre><code class="language-bash">#!/bin/bash
+# hooks/stop.sh: runs each time the
+# agent tries to finish its turn
+cd "$CLAUDE_PROJECT_DIR"
+# nothing changed: nothing to prove
+git diff --quiet origin/main &amp;&amp; exit 0
+log=$(mktemp)
+./verify &gt;"$log" 2&gt;&amp;1 &amp;&amp; exit 0
+# the agent reads this and goes on
+tail -n 30 "$log" &gt;&amp;2
+exit 2
+</code></pre>
+<p>Register it under <code>"Stop"</code> in <code>.claude/settings.json</code>, like the other hooks. Three details from Claude Code's docs:</p>
+<ul>
+  <li><b>It runs at the end of every turn</b>, even when you only asked a question. That's why the script skips the check when nothing has changed.</li>
+  <li><b>It can't loop forever.</b> After eight blocks in a row with no tool call between them, Claude Code ends the turn anyway. The hook's input also has <code>stop_hook_active</code>, which is true when the agent is already continuing because of a stop hook.</li>
+  <li><b>A command hook times out after 600 seconds by default</b>, and a timed-out hook decides nothing, so the agent simply stops. A slow verify doesn't hold the line; it waves everything through.</li>
+</ul>
+<p>So speed is part of the design, not a nicety. A 40-second verify runs after every change. A 20-minute one runs once at the end, or never. In <code>verify</code>, run the tests for the area you're changing and one smoke request, and leave the full suite to CI.</p>
+
+<h3>At your laptop</h3>
+<p>Write a <code>verify</code> script for one service. A Python version, using <code>pytest-cov</code> and <code>diff-cover</code>:</p>
+<pre><code class="language-bash">#!/bin/bash
+# verify: run before saying "done";
+# paste the output into the PR
+set -euo pipefail
+echo "== lint"
+ruff check .
+echo "== tests"
+pytest -q --cov=src \
+  --cov-report=xml
+echo "== changed lines tested?"
+diff-cover coverage.xml \
+  --compare-branch=origin/main \
+  --fail-under=80
+echo "== start the service"
+docker compose up --wait api
+echo "== smoke request"
+curl -sS --fail-with-body \
+  --json @tests/smoke/refund.json \
+  localhost:8080/refunds
+echo; echo "VERIFY OK"
+</code></pre>
+<ul>
+  <li><code>docker compose up --wait</code> returns only once the service and what it depends on are running or healthy.</li>
+  <li><code>curl --json</code> sends a JSON POST; <code>--fail-with-body</code> fails on an HTTP error but still prints the error body, so the agent sees why.</li>
+  <li><code>set -e</code> stops at the first failure, and the <code>==</code> lines show which step it was.</li>
+</ul>
+<p>Add one line to <code>CLAUDE.md</code>: "Before you say done, run <code>./verify</code> and paste its output." Then try it: ask for a small change, and break the smoke request on purpose to watch the agent read the error and fix it.</p>
+
+<h3>Your turn</h3>
+<predict id="vl-tests-never-ran" minutes="2">
+  <q><p>The agent changes how refunds are rounded and reports: "Done. All 312 tests pass." The diff touches <code>rounding.py</code> and no test file. How much does "312 pass" tell you about the change?</p></q>
+  <answer><p><b>Almost nothing.</b> It tells you nothing that was already tested broke. If no test runs the changed lines, the new rounding could be wrong and all 312 would still pass. Ask for a test of the new rounding, shown failing before the fix and passing after, and check diff coverage: <code>diff-cover</code> would show the changed lines as never run.</p></answer>
+</predict>
+
+<predict id="vl-cant-start" minutes="2">
+  <q><p>The payments service needs Postgres, Kafka and secrets from a vault to start. The agent writes: "I couldn't start the service locally, but the code looks correct and unit tests pass. Done." What do you do?</p></q>
+  <answer><p><b>Treat it as not verified, and fix the setup, not the agent.</b> It was honest: it had no way to run the service. Until there is one, every task stops at "tests pass". Give it one command that starts the service with its dependencies (a compose file with a local database, a broker and fake secrets), and add the smoke request to <code>verify</code>. That work pays off on every future task, yours too.</p></answer>
+</predict>
+
+<predict id="vl-edited-test" minutes="2">
+  <q><p><code>verify</code> was red on <code>test_refund_total</code>, which expected <code>10.00</code>. On the next run it's green. The diff shows the agent changed the expected value to <code>9.99</code>. Is the task done?</p></q>
+  <answer><p><b>Not yet: green is what you asked for, and it took the shortest way there.</b> Maybe the old value was wrong and the change is right, but that is a decision for a human, not a side effect. Say in "Done when" that existing tests mustn't be edited or skipped without asking, and have <code>verify</code> print <code>git diff --stat origin/main -- tests/</code> so test changes show up in the evidence.</p></answer>
+</predict>
+
+<predict id="vl-slow-verify" minutes="3">
+  <q><p>To be thorough, your <code>verify</code> runs the full integration suite: 25 minutes. You call it from a <code>Stop</code> hook with the default settings. What happens when the agent tries to finish?</p></q>
+  <hint>What does a hook decide when it runs out of time?</hint>
+  <answer><p><b>The hook times out after 600 seconds and decides nothing, so the agent stops as if the check had passed.</b> Even with a longer timeout, a 25-minute check gets run once, not after every change, and each fix waits nearly half an hour for feedback. Keep <code>verify</code> to the area you changed plus a smoke request, ideally under a couple of minutes, and run the full suite in CI.</p></answer>
+</predict>
+
+<predict id="vl-docker-down" minutes="3">
+  <q><p>Stretch: Docker isn't running on your laptop. Your <code>Stop</code> hook runs <code>verify</code>, which fails at <code>docker compose up</code>, so the hook exits 2. The agent edits code, tries to stop, is blocked again, and repeats for twenty minutes. Why doesn't the eight-block limit end it, and how should the hook behave?</p></q>
+  <hint>When does the count of blocks reset?</hint>
+  <answer><p><b>The count resets every time the agent calls a tool, and each round it edits something.</b> Yet no edit can fix a missing Docker daemon. Exit 2 should mean "your change fails a check". When the environment is broken, exit with another code: Claude Code treats that as a non-blocking hook error, so the turn ends and the notice shows the first line of your stderr. For example, run <code>docker info</code> first and <code>exit 1</code> if it fails.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Add "Done when" to your task brief template: the exact commands, what they must show, a new test seen failing first, and one real request to the running service.</li>
+  <li>Write <code>./verify</code> for the service you change most, keep it under a couple of minutes, and name it in <code>CLAUDE.md</code>.</li>
+  <li>Paste the <code>verify</code> output into every agent-written PR. Reviewers read the evidence first, and the diff after.</li>
+  <li>If the agent can't start a service locally, file that as a task. It's the gap between "tests pass" and "it works".</li>
+</ul>
+<p><b>If someone asks</b> "how can you trust what the agent did?": "I don't trust its word, I read its evidence. Each task says what done means, and the agent can't finish until a verify script passes: a new test it showed failing first, the service started, and a real request answered, with the output in the PR."</p>
+</atwork>
+
+<fact title="One bolt">
+<p>Toyota calls it <i>jidoka</i>: a machine or a person stops the line the moment something is wrong, so a defect never travels on. Toyota traces the idea to Sakichi Toyoda's 1896 power loom, which had a device that stopped it automatically when a weft thread broke. On a Toyota line, an operator can pull a stop cord, and a board called the andon lights up to call for help. In 1984 Toyota and GM opened NUMMI, a joint plant in GM's old factory in Fremont, California, closed in 1982. A union official called its workforce "the worst workforce in the automobile industry in the United States", and over 85% of NUMMI's staff were old hands from that plant. At GM, they said, you never stopped the line. Toyota sent workers to Japan, where Earl Ferguson watched a team stop the line to fix a single bad bolt, instead of sending the car on with more parts piled on top. "One bolt changed my attitude," he said. The first pull summoned team leaders; the line stopped only if they couldn't fix the problem. From the start, NUMMI's defect rate was one of the best in America. When GM put andon cords into its own plants, some workers got yelled at for pulling them, and a few plants cut the cords down. A check helps only if stopping is allowed.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: best practices, hooks reference; diff-cover README; Docker Compose and curl manuals; Toyota, "Toyota Production System"; This American Life #403, "NUMMI", 26 March 2010).</p>
+
+<recap><ul>
+  <li>"Done" from an agent means "looks done". Define done in the brief as commands and the output they must show.</li>
+  <li>"All tests pass" proves little on its own: ask for a new test seen failing first, changed lines covered, and the service answering a real request.</li>
+  <li>One fast <code>./verify</code>, run after every change, enforced by a <code>Stop</code> hook, with its output pasted into the PR.</li>
+</ul></recap>
