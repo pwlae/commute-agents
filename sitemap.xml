@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://pwlae.github.io/commute-agents/</loc><lastmod>2026-11-06</lastmod></url>
+  <url><loc>https://pwlae.github.io/commute-agents/</loc><lastmod>2026-11-08</lastmod></url>
   <url><loc>https://pwlae.github.io/commute-agents/l/how-to-use.html</loc><lastmod>2026-11-05</lastmod></url>
   <url><loc>https://pwlae.github.io/commute-agents/l/tokens.html</loc><lastmod>2026-11-06</lastmod></url>
   <url><loc>https://pwlae.github.io/commute-agents/l/sampling.html</loc><lastmod>2026-11-06</lastmod></url>
@@ -22,4 +22,5 @@
   <url><loc>https://pwlae.github.io/commute-agents/l/prompt-injection.html</loc><lastmod>2026-11-06</lastmod></url>
   <url><loc>https://pwlae.github.io/commute-agents/l/task-workspace.html</loc><lastmod>2026-11-06</lastmod></url>
   <url><loc>https://pwlae.github.io/commute-agents/l/context-files.html</loc><lastmod>2026-11-06</lastmod></url>
+  <url><loc>https://pwlae.github.io/commute-agents/l/unwritten-rules.html</loc><lastmod>2026-11-08</lastmod></url>
 </urlset>
