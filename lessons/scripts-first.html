@@ -1,0 +1,158 @@
+<p class="lead">Most of what happens around a ticket is the same every time: fetch, branch, install, test, format. Put all of that in a script, and give the agent only the step that needs judgment, kept small enough for a small, fast model. You get runs that are repeatable, cheap and easy to debug.</p>
+
+<h3>The idea</h3>
+<p>Picture hiring a top architect at a high hourly rate to redo your kitchen. You wouldn't pay them to carry boxes in from the van. They could, but it's slow, it's expensive, and every so often the boxes end up in a different room. The movers carry boxes the same way every time. The architect decides where the wall goes.</p>
+<p>Most of us ask the agent to do both: "set up PAY-123, fetch orders and payments, make the worktrees, install, run the tests, then fix the bug". Every one of those steps but the last is carrying boxes. The way to split the work:</p>
+<ol>
+  <li><b>Write down the routine</b>, step by step, as you'd do it by hand.</li>
+  <li><b>Ask of each step: would two careful engineers do it the same way?</b> If yes, it's a script: same input, same output, every time. That property is called <b>deterministic</b>.</li>
+  <li><b>What's left needs judgment.</b> Make it one small step: a short, fixed input, an answer in a fixed JSON shape, and the smallest model that gets it right.</li>
+  <li><b>The script checks the answer</b>, then carries on.</li>
+</ol>
+
+<pre class="mermaid" data-alt="Starting a ticket, top to bottom: the ticket text goes to a script, which adds the list of repos and builds a JSON schema. One small model step answers which repos the ticket touches, as JSON. A script checks the names, makes the worktrees and branch, installs and runs the tests. Only then does the main agent session start on the actual change.">
+flowchart TD
+  T["Ticket text"] --> S1["Script: add repo list,<br/>build the JSON schema"]
+  S1 --> M["Small model, one step:<br/>which repos? → JSON"]
+  M --> S2["Script: check names,<br/>worktrees, branch,<br/>install, tests"]
+  S2 --> A["Main agent session:<br/>the actual change"]
+  style M stroke-width:3px
+</pre>
+
+<p>Why the script wins for the fixed steps:</p>
+<ul>
+  <li><b>Same every time.</b> The model picks each command fresh on every run (<a href="#sampling">How the next token is chosen</a>). On Monday it branches from <code>origin/main</code>; on Tuesday from your stale local <code>main</code>.</li>
+  <li><b>Fast.</b> Each command an agent runs is one pass of <a href="#agent-loop">the loop</a>: wait for the model, run the tool, send the whole conversation back. A script runs the same commands back to back, with no model call in between.</li>
+  <li><b>Clean context.</b> Install logs and test output don't pile up in the session that has to think about the bug (<a href="#context-management">Why long sessions get worse</a>).</li>
+  <li><b>It fails at a line.</b> With <code>set -e</code>, a script stops at the first failing command. An agent may route around it and carry on.</li>
+</ul>
+
+<h3>Up close</h3>
+<p>Here is the judgment step for "which repos does this ticket touch?". It assumes a file <code>~/src/repos.txt</code> with one line per repo, such as <code>payments: refunds, PSP client</code>. The ticket comes in on standard input:</p>
+<pre><code class="language-bash">#!/bin/bash
+# triage PAY-123 &lt; ticket.txt
+# prints: orders payments
+set -euo pipefail
+list="$HOME/src/repos.txt"
+log="$HOME/tasks/log"
+mkdir -p "$log"
+# allowed answers: the list's names
+names=$(cut -d: -f1 "$list" |
+  jq -Rn '[inputs]')
+schema=$(jq -nc --argjson n "$names" '
+  {type: "object",
+   required: ["repos", "why"],
+   properties: {
+     repos: {type: "array",
+       minItems: 1,
+       items: {enum: $n}},
+     why: {type: "string"}}}')
+{ cat; echo; echo "Repos:"
+  cat "$list"; } |
+claude -p --model haiku \
+  --tools "" --max-turns 3 \
+  --no-session-persistence \
+  --output-format json \
+  --json-schema "$schema" \
+  "Which repos must change for this
+ticket? Use only the ticket and
+the repo list." &gt; "$log/$1.json"
+# no valid answer: fail here
+jq -er '.structured_output.repos
+  | join(" ")' "$log/$1.json"
+</code></pre>
+<p>Five choices keep the step small and safe:</p>
+<ul>
+  <li><b>Narrow input.</b> The ticket and a one-line description of each repo. Not the codebase.</li>
+  <li><b>A fixed answer.</b> <code>--json-schema</code> makes Claude Code check the reply against the schema and ask the model again if it doesn't match. The result lands in <code>structured_output</code>. The docs say to check that the field is there before you use it; <code>jq -e</code> fails the script if it isn't.</li>
+  <li><b>Only real names.</b> The schema's <code>enum</code> is built from the repo list itself, so the model can't answer with a repo you don't have. The <code>why</code> field is for you, when you glance at the answer.</li>
+  <li><b>No tools.</b> <code>--tools ""</code> switches off the built-in tools, so the model can only answer. It can't go exploring.</li>
+  <li><b>A small model.</b> The <code>haiku</code> alias means Haiku 5.5 on Anthropic's API. Anthropic describes it as built "for high-volume, latency-sensitive tasks such as classification, extraction, and routing". This step is a classification.</li>
+</ul>
+<p>Prices per million tokens, input / output, on Anthropic's API:</p>
+<table>
+  <tr><th>Model</th><th>Input</th><th>Output</th></tr>
+  <tr><td>Opus 5.5</td><td>$4</td><td>$20</td></tr>
+  <tr><td>Sonnet 5.5</td><td>$2</td><td>$10</td></tr>
+  <tr><td>Haiku 5.5</td><td>$0.10</td><td>$0.50</td></tr>
+</table>
+<p>Haiku 5.5 is 40 times cheaper than Opus 5.5, for prompts up to 100,000 tokens (above that it costs more). Run on a sample refund ticket for this lesson, the script above answered <code>orders payments</code> in about 4.5 seconds, for about $0.002.</p>
+
+<h3>Worked example</h3>
+<p>"Start a ticket", split:</p>
+<table>
+  <tr><th>Step</th><th>Same every time?</th><th>Who</th></tr>
+  <tr><td>Get the ticket text</td><td>Yes</td><td>Script: tracker CLI</td></tr>
+  <tr><td>Which repos it touches</td><td>No</td><td>Small model, JSON</td></tr>
+  <tr><td>Check the answer</td><td>Yes</td><td>Script: schema</td></tr>
+  <tr><td>Fetch, worktrees, branch, brief</td><td>Yes</td><td>Script: <code>newtask</code></td></tr>
+  <tr><td>Install, run tests once</td><td>Yes</td><td>Script</td></tr>
+  <tr><td>Find and fix the bug</td><td>No</td><td>Main agent session</td></tr>
+  <tr><td>Format, lint</td><td>Yes</td><td>Hook or script</td></tr>
+</table>
+<p>Two rows out of seven need a model. Money is rarely the main win; the five script rows are cheap even for a big model. The wins are that they now happen identically on every ticket, with no model calls in between, and that the one judgment step is small enough to test.</p>
+
+<h3>At your laptop</h3>
+<p>Save the script above as <code>triage</code> on your <code>PATH</code>, write <code>~/src/repos.txt</code>, and wire it to <code>newtask</code> from <a href="#task-workspace">One folder per task</a>:</p>
+<pre><code class="language-bash">#!/bin/bash
+# start PAY-123 &lt; ticket.txt
+set -euo pipefail
+id="$1"
+repos=$(triage "$id")
+echo "$id touches: $repos"
+read -rp "OK? [y/N] " ok &lt;/dev/tty
+[ "$ok" = y ] || exit 1
+# unquoted on purpose: one per repo
+newtask "$id" $repos
+echo "cd ~/tasks/$id &amp;&amp; claude"
+</code></pre>
+<p>The ticket text can come from your tracker's CLI, for example <code>gh issue view 123</code> piped into <code>start</code>, or from a file you paste it into. Then test the judgment step on its own: take ten closed tickets, look up in git which repos really changed, and run <code>triage</code> on each. Ten answers you can check is a small eval (<a href="#evals">Evals: better or just different?</a>). If it misses, improve the one-line repo descriptions before you reach for a bigger model.</p>
+
+<h3>Your turn</h3>
+<predict id="sf-agent-sets-up" minutes="2">
+  <q><p>Every morning you tell the agent: "set up PAY-123: fetch orders and payments, make worktrees, install, run the tests". Monday it works. Tuesday it branched from your out-of-date local <code>main</code>. Wednesday it ran <code>npm install</code> in the wrong folder. Why does a simple routine keep changing, and what's the fix?</p></q>
+  <answer><p><b>The agent decides the commands afresh on every run</b>, sampling each one, and nothing makes Tuesday's choice match Monday's. The steps never need judgment, so take them away from the model: ask the agent once to write the setup as a script, review it like any script, then run the script. Same commands every day, and when it breaks, it stops at a line number.</p></answer>
+</predict>
+
+<predict id="sf-where-judgment" minutes="2">
+  <q><p>Your on-call routine: (a) read the service name from the alert's JSON, (b) fetch that service's logs for the last 30 minutes, (c) decide whether the errors come from your code or from a provider outage, (d) post a summary to the team channel. Which steps need a model?</p></q>
+  <answer><p><b>Only (c).</b> (a) is one <code>jq</code> call, (b) is a query with fixed parameters, (d) is an API call. Even (c) can be a small step: hand the model the logs and ask for a fixed answer in JSON: a <code>cause</code> that must be "ours", "provider" or "unknown", plus the <code>evidence</code>. The script posts it.</p></answer>
+</predict>
+
+<predict id="sf-invented-repo" minutes="2">
+  <q><p>An early version of <code>triage</code> asked for "a JSON list of repos" with no schema. One day it returned <code>["orders", "payment-service"]</code>. The repo is called <code>payments</code>. <code>newtask</code> made the orders worktree, then failed. How do you stop this for good?</p></q>
+  <answer><p><b>Make wrong answers impossible, and check before acting.</b> Build the schema's <code>enum</code> from your real repo list, so the only names the model can return are ones that exist; Claude Code asks it again if it strays. And have the script check the whole answer before its first side effect. Never pass model output straight into a command.</p></answer>
+</predict>
+
+<predict id="sf-biggest-model" minutes="2">
+  <q><p>A teammate wants the triage step on the biggest model, "to be safe". It reads a ticket and picks from a list of 12 repos. What do you say?</p></q>
+  <answer><p><b>Measure first.</b> Opus 5.5 input costs 40 times as much as Haiku 5.5, and a bigger model is slower, for a task that is a classification. Run both on 20 closed tickets where git shows the real answer. If the small model matches, keep it. If it misses, the cause is often a vague repo description, which no model can make up for.</p></answer>
+</predict>
+
+<predict id="sf-two-answers" minutes="3">
+  <q><p>Stretch: you run <code>triage</code> twice on the same ticket. Once it says <code>orders payments</code>, once <code>orders payments contracts</code>. Is the step broken?</p></q>
+  <hint>What is the ticket really asking?</hint>
+  <answer><p><b>Not necessarily: the disagreement is information.</b> The ticket probably doesn't say whether the shared event schema has to change; in testing for this lesson, the <code>why</code> field said exactly that. It's a real judgment call, and the script can use it: run the step twice or three times, go ahead when the answers agree, and ask you only when they don't. That's cheap with a small model, and it puts your attention where it's needed.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Pick one routine you do by hand every week: starting a ticket, cutting a release, reproducing a bug locally. Write down the steps and mark each one "same every time?".</li>
+  <li>Ask your agent to write the script for the "yes" steps, not to do them. Review it, then run the script from now on.</li>
+  <li>If one step needs judgment, make it one small model call with a JSON schema, names checked by the script, and a log of every answer.</li>
+  <li>Test that step on ten past cases where you know the answer before you trust it.</li>
+</ul>
+<p><b>If someone asks</b> "why not just let the agent do the whole thing?": "Because most of the steps are the same every time, and a script does them identically every time and stops at the line that failed. The agent gets only the part that needs judgment, and for a small, well-defined step a small model is usually enough."</p>
+</atwork>
+
+<fact title="Make, written in a weekend">
+<p>At Bell Labs in 1976, Steve Johnson, the author of yacc, stormed into Stuart Feldman's office. In Feldman's words, he was "cursing the Fates that had caused him to waste a morning debugging a correct program": the bug had been fixed, but the file hadn't been recompiled. Feldman had lost part of the previous evening to the same mistake. The idea "began with an elaborate idea of a dependency analyzer, boiled down to something much simpler, and turned into Make that weekend." The version history in the Seventh Edition Unix source starts with "2.1 4/24/76 Base version", a Saturday. Feldman's paper on Make describes the programmer's cycle as "think — edit — make — test": the human thinks and edits, a program does the rest. One early choice stuck. Command lines must start with a tab, because Feldman was learning Lex and newline-tab was the pattern that worked. "A few weeks later I had a user population of about a dozen, most of them friends, and I didn't want to screw up my embedded base." Feldman received the 2003 ACM Software System Award for Make.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: headless mode, CLI reference, structured outputs, model configuration; Anthropic models overview and pricing; Feldman, "Make — A Program for Maintaining Computer Programs", 1978; V7 make source, TUHS archive; Feldman quoted in Raymond, The Art of Unix Programming, 2003).</p>
+
+<recap><ul>
+  <li>If two careful engineers would do a step the same way, it's a script: repeatable, fast, out of the agent's context, and it stops at the failing line.</li>
+  <li>Give the model only the judgment, as one small step: narrow input, a JSON schema with names from your own list, no tools, a small model.</li>
+  <li>Check the answer before acting, log it, and test the step on past cases. Ask the agent to write scripts, not to do the steps.</li>
+</ul></recap>
