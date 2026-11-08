@@ -317,6 +317,18 @@ def link_rewriter(home_of_problem, here):
     return lambda text: re.sub(r'href="#([\w-]+)"', repl, text)
 
 
+def unlink_unwritten(text, written, pending):
+    """A link to a lesson that isn't written yet would be a 404: keep its
+    text, drop the link. It comes back once that lesson is published."""
+    def repl(m):
+        if m.group(1) in LESSON_IDS and m.group(1) not in written:
+            pending.add(m.group(1))
+            return m.group(2)
+        return m.group(0)
+
+    return re.sub(r'<a href="#([\w-]+)">(.*?)</a>', repl, text, flags=re.S)
+
+
 LESSON_IDS = set()
 
 # Toolbar icons from Lucide (ISC licence, https://lucide.dev). Styled by .icon-btn svg in the template.
@@ -382,6 +394,7 @@ def build():
     order = cur["lessons"]
     done = [l for l in order if l["id"] in written]
     parts, all_problems, lesson_problems, home_of_problem = {}, [], {}, {}
+    pending_links = set()
     for l in done:
         try:
             body = (LESSONS / f"{l['id']}.html").read_text()
@@ -395,6 +408,8 @@ def build():
             body = expand_facts(body)
             body = expand_atwork(body)
             body = expand_recap(body)
+            body = unlink_unwritten(body, written, pending_links)
+            answers = unlink_unwritten(answers, written, pending_links)
         except BuildError as e:
             raise BuildError(f"lessons/{l['id']}.html: {e}")
         all_problems += problems
@@ -552,6 +567,8 @@ def build():
         f"index {sizes['index.html'] // 1024} KB, lessons {min(lesson_sizes) // 1024}-{max(lesson_sizes) // 1024} KB, "
         f"all.html {sizes['all.html'] // 1024} KB"
     )
+    if pending_links:
+        print("links shown as plain text until written: " + ", ".join(sorted(pending_links)))
 
 
 if __name__ == "__main__":
