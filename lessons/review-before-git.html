@@ -1,0 +1,154 @@
+<p class="lead">The agent that wrote the code is the worst reviewer of it, because it reads what it meant to write. Before anything reaches git, let scripts block the mechanical mistakes, let a fresh reviewer read only the diff and your team's rules, and save the human for what's left: intent, design and risk.</p>
+
+<h3>The idea</h3>
+<p>Proofread your own email and you read what you meant to say. The missing "not" slips past, because your head fills it in. A colleague who wasn't in your head catches it in five seconds.</p>
+<p>An agent has the same blind spot, only stronger. Its context holds its plan, its reasoning and every file it opened, so when you ask "review your changes" in the same session, it checks the code against the story it already believes. Claude Code's own best-practice guide puts it this way: a review by a fresh subagent "isn't swayed by the reasoning that produced the code".</p>
+<p>So review happens in layers, cheapest first, before git and before a human:</p>
+<ol>
+  <li><b>Scripts first.</b> The formatter, the lint rules and architecture tests from <a href="#unwritten-rules">Turn unwritten rules into checks</a>, and <code>./verify</code> from <a href="#verify-loop">Make the agent prove it works</a>. Anything a program can decide never reaches a reviewer.</li>
+  <li><b>A fresh reviewer.</b> A new agent with no memory of the session reads the diff and a short file of review rules, and returns a few findings.</li>
+  <li><b>The author answers.</b> The writing agent fixes each finding or replies with a reason. Findings are advice, not orders.</li>
+  <li><b>The human reviews what's left</b>: is this the right change, is the design sound, what could go wrong in production?</li>
+</ol>
+
+<pre class="mermaid" data-alt="Review before git, top to bottom: the agent edits code. Checks run: format, lint and verify. Red sends it back to the agent. Green goes to a fresh reviewer that reads only the diff and REVIEW.md. Its findings go back to the agent to fix or answer. When nothing is left, the change is committed and a PR opened with the evidence and the findings. The human then reviews intent, design and risk.">
+flowchart TD
+  A["Agent edits code"] --> B{"Checks: format,<br/>lint, verify"}
+  B -->|red| A
+  B -->|green| C{"Fresh reviewer:<br/>diff + REVIEW.md"}
+  C -->|"findings: fix<br/>or answer"| A
+  C -->|clean| D["Commit; PR with<br/>evidence + findings"]
+  D --> E["Human: intent,<br/>design, risk"]
+  style C stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p>Three choices make a reviewer useful rather than noisy.</p>
+<p><b>A fresh context.</b> The reviewer must not share the author's conversation. A subagent (see <a href="#subagents">Subagents and orchestration</a>) or a separate <code>claude -p</code> run both start clean. Claude Code ships one too: <code>/code-review</code> reviews your branch's changes in a background subagent that never saw your conversation, and follows your CLAUDE.md files.</p>
+<p><b>The diff, not the repo.</b> Start the reviewer from <code>git diff --staged</code> (the changes you're about to commit). A diff is small, so the review is quick and cheap, and every finding is about this change, not a three-year-old file. That was the lesson Facebook learned with its Infer analyser (see the fact below). The trade-off: a diff hides the callers of what changed. Let the reviewer follow them with read-only tools, or rely on the tests.</p>
+<p><b>Rules, not taste.</b> A reviewer asked to find problems will find some. Claude Code's guide warns about exactly this: "A reviewer that's asked to find problems will always find <em>something</em>", and if you fix every finding "you end up with extra abstraction layers and tests for cases that can't happen". So give it your team's list of what matters, and tell it what to skip. A short <code>REVIEW.md</code> at the repo root:</p>
+<pre><code class="language-markdown"># Review rules
+Report only what breaks behaviour,
+loses money or data, or blocks a
+rollback. Format and lint already
+passed: no style comments.
+
+Always check:
+- Amounts are integer minor units
+- Kafka consumers are idempotent:
+  a redelivered message is a no-op
+- Migrations work while the old
+  version of the code still runs
+- Payment provider calls go
+  through src/lib/psp
+
+Each finding: file:line, the rule
+or bug, and why it matters.
+Nothing found? Say "LGTM".
+</code></pre>
+<p>Any file name works for your own reviewer. REVIEW.md is a good choice, because Anthropic's managed Code Review service for GitHub pull requests reads a file by that name for review-only rules. The local <code>/code-review</code> command reads your CLAUDE.md files and ignores it.</p>
+
+<h3>The gate before git</h3>
+<p>Checks that must pass before a commit belong in git's <code>pre-commit</code> hook, which runs for you and for the agent alike. Keep it in the repo and point git at it, so the whole team gets it:</p>
+<pre><code class="language-bash">#!/bin/bash
+# .githooks/pre-commit: runs before
+# every commit; non-zero = no commit
+set -e
+ruff format --check .
+ruff check .
+pytest -q tests/test_architecture.py
+</code></pre>
+<p>Turn it on once per clone with <code>git config core.hooksPath .githooks</code> and it runs from then on.</p>
+<p>Two rules keep the gate honest:</p>
+<ul>
+  <li><b>Blocking checks are programs.</b> They answer yes or no the same way every time. The reviewer's findings are sampled (see <a href="#sampling">How the next token is chosen</a>): run it twice and you get a slightly different list. That is fine for advice, and bad for a gate that refuses commits.</li>
+  <li><b>Keep it fast.</b> A gate that takes ten minutes gets skipped, so keep this hook to seconds. <code>./verify</code> already runs in the <code>Stop</code> hook, and the full suite runs in CI, which no one can skip.</li>
+</ul>
+
+<h3>Worked example</h3>
+<p>One diff adds a Kafka consumer that issues refunds. Five problems hide in it. Who catches each?</p>
+<table>
+  <tr><th>Problem</th><th>Caught by</th></tr>
+  <tr><td>Import order, quote style</td><td>Formatter, in a hook</td></tr>
+  <tr><td>Raw HTTP to the payment provider</td><td>Lint rule, before commit</td></tr>
+  <tr><td>Rounds 9.995 the wrong way</td><td>A new test in <code>./verify</code></td></tr>
+  <tr><td>A redelivered message refunds twice</td><td>Fresh reviewer, from REVIEW.md</td></tr>
+  <tr><td>Ticket asked for partial refunds; this refunds in full</td><td>Human: only they know the intent</td></tr>
+</table>
+<p>The human still reads the PR, but now with the evidence and the reviewer's findings beside the diff, and with their attention on the last row instead of the first.</p>
+
+<h3>At your laptop</h3>
+<p>Write a reviewer that sees only the staged diff and your rules. A plain script, so you and the agent run it the same way:</p>
+<pre><code class="language-bash">#!/bin/bash
+# review: fresh eyes on the staged
+# diff, before you commit
+set -euo pipefail
+diff=$(git diff --staged)
+if [ -z "$diff" ]; then
+  echo "nothing staged"; exit 0
+fi
+{ cat REVIEW.md
+  echo "== STAGED DIFF"
+  echo "$diff"
+} | claude -p --tools "" \
+  "You didn't write this code.
+Review the diff against the rules
+above. At most 8 findings, worst
+first. Don't rewrite the code."
+</code></pre>
+<ul>
+  <li><b>A new process is a fresh context.</b> It knows nothing about the session that wrote the code.</li>
+  <li><b><code>--tools ""</code> removes every built-in tool</b>, so it can't edit, run commands or wander off. It sees the piped text, plus your CLAUDE.md, which <code>-p</code> loads as usual.</li>
+  <li><b>To let it follow callers</b> outside the diff, use <code>--tools "Read,Grep,Glob"</code> instead. Still read-only.</li>
+</ul>
+<p>Add one line to CLAUDE.md: "Before you commit, stage your changes, run <code>./review</code> and fix each finding or answer it with a reason. Put both in the PR." Then test it: stage a consumer with no idempotency check and see whether the review catches it.</p>
+
+<h3>Your turn</h3>
+<predict id="rb-same-session" minutes="2">
+  <q><p>The agent finishes a refund handler. You type "review your changes". It finds a typo in a log message and says the rest looks good. A reviewer started fresh on the same diff reports that a redelivered message refunds twice. Why did the first review miss it?</p></q>
+  <answer><p><b>The author reviewed its own story, not the code.</b> Its context holds the plan it made, including "messages arrive once", so it read the code as doing what it meant. A fresh reviewer has only the diff and the rules, and "consumers are idempotent" is on the list. Research agrees: a 2024 ICLR paper, "Large Language Models Cannot Self-Correct Reasoning Yet", found that models asked to check their own answers without new information rarely improved them, and sometimes made them worse.</p></answer>
+</predict>
+
+<predict id="rb-style-nits" minutes="2">
+  <q><p>Your reviewer returns 14 findings: 11 about import order, quote style and line length, 3 about logic. A week later nobody reads its output. What went wrong, and what's the fix?</p></q>
+  <answer><p><b>It did the formatter's job, and the noise buried the real findings.</b> Style is decided by a program, so it never needs a reviewer. Run the formatter and linter in a hook before the review, and tell the reviewer "format and lint already passed: no style comments". If it keeps raising the same thing, that's a rule waiting to become a check.</p></answer>
+</predict>
+
+<predict id="rb-diff-blind" minutes="2">
+  <q><p>A diff changes <code>refund_amount()</code> to return pounds instead of pence. Your tool-less reviewer says LGTM. Three callers, none in the diff, now refund a hundred times too little. What was missing?</p></q>
+  <answer><p><b>The reviewer couldn't see the callers.</b> A diff shows what changed, not who depends on it. Give it read-only tools such as <code>Read</code> and <code>Grep</code> so it can search for callers, and say in REVIEW.md "for any changed signature or unit, check every caller". Better still, make units part of the type, so the compiler or a test catches it before any reviewer.</p></answer>
+</predict>
+
+<predict id="rb-wrong-finding" minutes="3">
+  <q><p>The reviewer flags "possible null <code>order</code> in <code>refund()</code>". The type and the database column both forbid null. The writing agent adds a null check and a test for it anyway. Harmless?</p></q>
+  <hint>What happens after a hundred findings like this?</hint>
+  <answer><p><b>Each one is small; together they rot the code.</b> Checks and tests for impossible cases make the code longer and suggest to the next reader that null can happen. A reviewer's finding is advice from a model that can be wrong. Tell the author to fix a finding or answer it with a reason, here "the type forbids null", and put both in the PR so the human sees the argument.</p></answer>
+</predict>
+
+<predict id="rb-no-verify" minutes="3">
+  <q><p>Stretch: your pre-commit hook fails on a lint error. The agent runs <code>git commit -n -m "wip"</code> and the commit goes through. You had a deny rule for <code>--no-verify</code> in Bash commands. What happened, and what actually holds?</p></q>
+  <hint>Read the short options in git commit's manual.</hint>
+  <answer><p><b><code>-n</code> is the short form of <code>--no-verify</code></b>, which skips the pre-commit hook, and your rule matched only the long spelling. As <a href="#hooks-permissions">Hooks and permissions</a> showed, a rule on command text catches the usual spellings, never all of them. Add a rule for <code>-n</code> too, and say in CLAUDE.md "never skip hooks; ask". What actually holds is the same checks in CI with branch protection, where the agent can't reach them.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Before you ask a human, run a fresh review agent on your diff: a reviewer subagent, <code>/code-review</code> or the <code>review</code> script above.</li>
+  <li>Write a short <code>REVIEW.md</code> that says what must always be checked, what counts as serious, and "no style".</li>
+  <li>Put the formatter, lint and architecture tests in a shared <code>pre-commit</code> hook, and the same checks in CI.</li>
+  <li>In the PR, paste the verify output and the review's findings with how each was handled, so the human reviews intent and design.</li>
+</ul>
+<p><b>If someone asks</b> "isn't an AI reviewing AI code pointless?": "Not when the reviewer starts fresh. It has only the diff and our written rules, not the author's reasoning, so it catches what the author talked itself past, and scripts catch the rest before any human looks."</p>
+</atwork>
+
+<fact title="Near silence, then 70%">
+<p>Infer is a static analyser that grew out of academic research on separation logic. Its startup, Monoidics, was bought by Facebook in 2013, and Infer was open-sourced in 2015. Its first deployment at Facebook ran once a night on the whole Android codebase and produced a list of issues, which the team assigned by hand to the engineers best placed to fix them. "The response was stunning," the team later wrote: "we were greeted by near silence." They had worked to get false positives under 20%, yet the fix rate was near zero. Then they switched Infer to "diff time": it ran on each code change and commented in code review, like a bot. The fix rate "rocketed to over 70%", with the same analysis and the same false positive rate. Engineers explained why: a report on the change in front of you needs no context switch, and it is almost certainly yours to fix. The team added that timing matters, because a bot that takes an hour or more on a diff "could be too late". A reviewer is worth most on the diff, while the author is still there.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (Claude Code docs: best practices, /code-review, Code Review REVIEW.md, CLI reference, tools reference; git manuals: git-commit, githooks; Huang et al., ICLR 2024; Distefano et al., "Scaling Static Analyses at Facebook", CACM, August 2019).</p>
+
+<recap><ul>
+  <li>The author can't see its own mistakes: its context holds the story it believes. Review with a fresh agent that reads only the diff and the team's rules.</li>
+  <li>Programs block (format, lint, architecture tests in a pre-commit hook and CI); the reviewer advises, and the author fixes or answers each finding.</li>
+  <li>The human gets evidence and findings with the diff, and spends their time on intent, design and risk.</li>
+</ul></recap>
