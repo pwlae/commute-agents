@@ -1,0 +1,142 @@
+<p class="lead">How much faster the agent feels is not a measurement. Log four numbers for every ticket: time to merge, agent cost, review rounds and rework. Take a baseline from your last five tickets before you change anything, and you'll know which changes to your setup actually help.</p>
+
+<h3>The idea</h3>
+<p>You buy new running shoes and the first run feels quick. Your watch says your 5K time hasn't moved. The watch remembers last month; your legs don't. Nobody trusts a feeling about a race time, yet most of us judge our agent setup exactly that way.</p>
+<p><a href="#evals">Evals: better or just different?</a> tests a setup on fixed tasks. This lesson measures the other side: what happens to your real tickets, week after week. It needs no dashboard, just a log:</p>
+<ol>
+  <li><b>Pick a few numbers per ticket</b>, some for speed and some for quality, and never read one without the other.</li>
+  <li><b>Let your scripts write them down</b> as you work, one line per event, into one file.</li>
+  <li><b>Take a baseline first</b>: your last five tickets, from the tracker and GitHub, before you change anything.</li>
+  <li><b>Change one thing at a time</b>, keep logging, and read the rows, not just the averages.</li>
+  <li><b>Confirm on your eval set</b> before you believe a change made you faster.</li>
+</ol>
+
+<pre class="mermaid" data-alt="The life of one ticket in the log, top to bottom: newtask logs the start and the setup version. Agent runs log their cost. When the PRs merge, donetask logs review rounds and the merge. Weeks later you log any rework by hand. loopstats turns the log into one row per ticket, which you compare with your last five tickets, then confirm on your eval set.">
+flowchart TD
+  A["Ticket starts: newtask<br/>logs start + setup version"] --> B["Agent runs<br/>log their cost"]
+  B --> C["PRs merge: donetask<br/>logs review rounds"]
+  C --> D["Weeks later, by hand:<br/>any rework"]
+  D --> E["loopstats:<br/>one row per ticket"]
+  E --> F["Compare with your last<br/>five; confirm on evals"]
+  style E stroke-width:3px
+</pre>
+
+<h3>Up close</h3>
+<p>Four numbers are enough to start:</p>
+<table>
+  <tr><th>Number</th><th>Where it comes from</th><th>What it catches</th></tr>
+  <tr><td>Hours to merge</td><td>Your scripts' timestamps</td><td>A slow loop</td></tr>
+  <tr><td>Agent cost</td><td><code>claude -p</code> JSON, or <code>/usage</code></td><td>Runaway sessions</td></tr>
+  <tr><td>Review rounds</td><td>GitHub: "changes requested"</td><td>PRs opened too early</td></tr>
+  <tr><td>Rework</td><td>You: a later fix or revert</td><td>Speed bought with bugs</td></tr>
+</table>
+<p><b>Speed and quality come in pairs.</b> DORA, the research programme behind the book <i>Accelerate</i> (Forsgren, Humble and Kim, 2018), groups its delivery metrics into throughput (how fast changes ship) and instability (how often they fail or need rework). In 2024 it added a fifth metric, <b>deployment rework rate</b>, for unplanned deploys made to fix a production problem. Its 2025 report shows why they belong together: more AI adoption went with higher throughput, and with lower stability. Watch only speed and that looks like a win. So keep the same pairing for yourself: no hours column without the rework column next to it.</p>
+<p><b>Avoid vanity metrics.</b> Lines of code, PRs opened, sessions run, tokens used, "percent of code written by AI". Ask of any number: <b>would it go up if my work got worse?</b> If yes, it measures activity, not results.</p>
+<p><b>Cost is an estimate.</b> Claude Code computes it from token counts at list price. On a subscription you aren't billed per token, but the number still shows which tickets eat the most.</p>
+<p><b>The log and the eval answer different questions.</b> The log is real work, so every ticket differs: a month of config changes looks fast whatever your setup. The eval holds the tasks fixed. Use the log to notice, and the eval to confirm.</p>
+
+<h3>At your laptop</h3>
+<p>One tiny script that only appends. Save it as <code>tlog</code> on your <code>PATH</code>:</p>
+<pre><code class="language-bash">#!/bin/bash
+# tlog PAY-123 cost 1.80
+# one line per event; only appends
+printf '%s\t%s\t%s\t%s\n' \
+  "$(date +%s)" "$1" "$2" "${3:-}" \
+  &gt;&gt; "$HOME/tasks/loop.tsv"
+</code></pre>
+<p>Call it from the scripts you already have (<a href="#task-workspace">One folder per task</a>, <a href="#headless">Running agents without you</a>):</p>
+<pre><code class="language-bash"># newtask: which setup ran this?
+# (if your setup lives in git)
+v=$(git -C ~/setup \
+  rev-parse --short HEAD)
+tlog "$id" start "$v"
+
+# after each claude -p run
+tlog "$id" cost \
+  "$(jq .total_cost_usd run.json)"
+
+# donetask, before removing each
+# worktree: rounds of "changes"
+n=$(cd "$wt" &amp;&amp; gh pr view \
+  --json reviews --jq '[.reviews[]
+  | select(.state ==
+  "CHANGES_REQUESTED")] | length')
+tlog "$1" rounds "$n"
+# ...and once, at the end
+tlog "$1" merged
+</code></pre>
+<p>Two numbers need you: <code>tlog PAY-123 cost 2.40</code> from <code>/usage</code> before you close an interactive session, and <code>tlog PAY-123 rework PAY-140</code> the day a fix lands. Then one row per ticket:</p>
+<pre><code class="language-bash">#!/bin/bash
+# loopstats: one row per ticket
+awk -F'\t' '
+$3=="start"  {s[$2]=$1}
+$3=="merged" {m[$2]=$1}
+$3=="rounds" {r[$2]+=$4}
+$3=="cost"   {c[$2]+=$4}
+$3=="rework" {w[$2]++}
+END {
+  print "ticket hours rounds rework $"
+  for (t in m) printf \
+    "%s %.0f %d %d %.2f\n", t,
+    (m[t]-s[t])/3600, r[t], w[t], c[t]
+}' "$HOME/tasks/loop.tsv" | column -t
+</code></pre>
+<p>For the baseline, GitHub already knows your last five merges and their review rounds; the start dates are in your tracker:</p>
+<pre><code class="language-bash">gh pr list --author "@me" \
+  --state merged --limit 5 \
+  --json number,mergedAt,reviews \
+  --jq '.[] | [.number, .mergedAt,
+    ([.reviews[] | select(.state ==
+    "CHANGES_REQUESTED")] | length)]
+    | @tsv'
+</code></pre>
+<p>Agent cost can't be recovered for old tickets, which is one more reason to start the log before you change your setup.</p>
+
+<h3>Your turn</h3>
+<predict id="my-lines-per-day" minutes="2">
+  <q><p>Since you started working with agents, your lines of code per day have tripled. Your manager wants that number on the team dashboard. Good idea?</p></q>
+  <answer><p><b>No: it's a vanity metric.</b> It would go up if your work got worse. An agent that hand-writes retries and rate limits instead of using the team's client library adds hundreds of lines, and several PRs later someone deletes them. Lines are cost, not value. Show hours to merge with rework next to it.</p></answer>
+</predict>
+
+<predict id="my-rounds-down" minutes="2">
+  <q><p>After you add a fresh reviewer before git, your review rounds fall from about two per PR to one. But two of your last five tickets needed a fix PR within a week; before, none did. Is the reviewer helping?</p></q>
+  <answer><p><b>The friction number improved and the quality number got worse.</b> Polished PRs get approved faster, so human reviewers may be reading less closely. Rounds measure how often a PR comes back, not whether it is right. Read the two fixes: what kind of bug, and which check would have caught it? Add that to <code>REVIEW.md</code> or a test, and keep watching rework, not rounds alone.</p></answer>
+</predict>
+
+<predict id="my-no-baseline" minutes="2">
+  <q><p>On Monday you switch to a new setup and start logging. Two weeks later: 30 hours per ticket, 1.2 review rounds, $6 of agent cost. You tell the team it works. What's missing?</p></q>
+  <answer><p><b>A baseline.</b> Thirty hours means nothing without the number from before. Your last five tickets' dates and review rounds are in the tracker and GitHub, so you can still get those, but their agent cost is gone. Next time, log a week with the old setup first, then change one thing.</p></answer>
+</predict>
+
+<predict id="my-cheap-model" minutes="2">
+  <q><p>You switch your default model to a smaller one. Agent cost per ticket falls from $8 to $2. Hours per ticket go up by a day, because you rewrote half of what the agent produced. A win?</p></q>
+  <answer><p><b>No.</b> An hour of an engineer's time costs far more than the $6 saved. Cost is one column; read it with hours and rework. A smaller model is right for small, well-defined steps (see <a href="#scripts-first">Script first, one small agent step</a>), not because the cost column shrank.</p></answer>
+</predict>
+
+<predict id="my-easy-month" minutes="3">
+  <q><p>Stretch: your log shows tickets 40% faster in March than in February. March is also when you added your verify script. A colleague points out that March was mostly small config tickets. How do you find out if the script helped?</p></q>
+  <hint>What does an eval hold fixed that the log can't?</hint>
+  <answer><p><b>Run your eval set with and without the change.</b> The log can't separate your setup from the mix of tickets: easy tickets make any setup look fast. An eval runs both setups on the same tasks, several times each, so the ticket mix drops out. If the eval agrees, believe the log; if not, the speed came from the tickets.</p></answer>
+</predict>
+
+<atwork>
+<ul>
+  <li>Before you change anything, write down your last five tickets: start and merge dates, review rounds, and any fix PR that followed.</li>
+  <li>Add <code>tlog</code> to <code>newtask</code>, <code>donetask</code> and every scripted run. Log rework by hand the day it happens.</li>
+  <li>Never quote a speed number without its quality number: hours with rework, cost with hours.</li>
+  <li>When the log says a change helped, confirm it on your eval set before you tell the team. Proving it to the team is Part 4.</li>
+</ul>
+<p><b>If someone asks</b> "do agents actually make you faster?": "I log every ticket: hours to merge, review rounds, fixes afterwards and agent cost, and compare against my last five tickets before each change. I don't trust the feeling, because developers who felt 20% faster in a controlled study were measured 19% slower."</p>
+</atwork>
+
+<fact title="Felt faster, measured slower">
+<p>In early 2025, METR, a non-profit research group, ran a randomised trial with 16 experienced open-source developers on 246 real issues in large projects they had worked on for years (on average over 22,000 GitHub stars and a million lines of code). Each issue was randomly assigned: AI tools allowed or not. Most developers used Cursor with Claude 3.5 or 3.7 Sonnet. Before starting, the developers forecast that AI would cut their time by 24%; experts in economics and machine learning predicted 39% and 38%. With AI allowed, tasks took 19% longer. After the study, the developers still estimated that AI had made them 20% faster. METR warned against reading too much into it: a small sample, one setting, early-2025 tools. In February 2026 it said a follow-up study could no longer give a reliable number, partly because many developers now refused to work without AI, and that developers were probably sped up more by then. The tools have changed. The gap they found was between a feeling and a stopwatch: nearly 40 points, on the developers' own work.</p>
+</fact>
+
+<p class="checked">Facts checked: November 2026 (METR, July 2025 paper and February 2026 update; DORA metrics guide and history; Google Cloud, 2025 DORA report announcement; Claude Code docs: costs, CLI reference; GitHub CLI manual).</p>
+
+<recap><ul>
+  <li>Log four numbers per ticket, by script where you can: hours to merge, agent cost, review rounds, rework.</li>
+  <li>Read speed and quality together, and drop any metric that would go up if your work got worse.</li>
+  <li>Baseline your last five tickets before changing anything; the log notices, your eval set confirms.</li>
+</ul></recap>
