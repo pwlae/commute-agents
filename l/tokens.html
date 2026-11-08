@@ -33,7 +33,8 @@ h3{font-size:1.15rem;margin:1.75rem 0 .5rem}
 p,ul,ol{margin:.6rem 0}
 li{margin:.2rem 0}
 code{font:.88em/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--soft);padding:.1em .3em;border-radius:3px}
-:not(pre)>code{display:inline-block;max-width:100%;overflow-wrap:break-word}
+:not(pre)>code,.glue{display:inline-block;max-width:100%;overflow-wrap:break-word}
+.glue>code{display:inline}
 pre.code{background:var(--soft);border-left:3px solid var(--line);padding:.75rem;overflow-x:auto;margin:.75rem 0;border-radius:3px}
 pre.code code{background:none;padding:0;font-size:14px}
 .lead{font-size:1.1rem}
@@ -198,7 +199,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
     <span class="p">}],</span>
 <span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">path</span><span class="p">,</span> <span class="n">r</span><span class="o">.</span><span class="n">input_tokens</span><span class="p">)</span></code></pre>
-<p>Other providers have their own counters. OpenAI publishes its tokenizers as an open-source library, <code>tiktoken</code>, so you can count offline.</p>
+<p>Other providers have their own counters. OpenAI publishes its tokenizers as an open-source library, <span class="glue"><code>tiktoken</code>,</span> so you can count offline.</p>
 
 <h3>Worked example</h3>
 <p>Here is some typical text, counted with OpenAI's open <code>o200k_base</code> tokenizer. Other tokenizers give different numbers, but the pattern is the same:</p>
@@ -209,7 +210,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
   <tr><td>One JSON log line with IDs</td><td>226</td><td>116</td><td>1.9</td></tr>
   <tr><td>A UUID</td><td>36</td><td>36</td><td>1.0</td></tr>
 </table>
-<p>Ordinary code is nearly as cheap as English: <code>return</code>, <code>except</code> and four-space indents are all common pieces. Timestamps, trace IDs and UUIDs are not, so they fall apart into single characters. A log line costs more than twice as much per character as prose.</p>
+<p>Ordinary code is nearly as cheap as English: <span class="glue"><code>return</code>,</span> <code>except</code> and four-space indents are all common pieces. Timestamps, trace IDs and UUIDs are not, so they fall apart into single characters. A log line costs more than twice as much per character as prose.</p>
 <p>Language matters too. "The quick brown fox jumps over the lazy dog." is 10 tokens. The same sentence in Russian is 20, and in Japanese 20, even though the Japanese has fewer than half the characters. A NeurIPS 2023 study by Petrov and colleagues found that the same text translated into different languages can need up to 15 times more tokens. Those languages pay more per message and fill the window faster.</p>
 
 <h3>Your turn</h3>
@@ -224,7 +225,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <div class="lc pc" id="q-tok-new-tokenizer"><p class="pc-label">Question 5 &middot; <span class="mins">~3 min</span></p><div class="pc-q"><p>Stretch: your team measured its agent's system prompt at 40,000 tokens. After moving to a newer model with the same price per token, the bill for the same work goes up noticeably. Nothing in the prompt changed. Why?</p></div><details class="hint"><summary>Hint</summary><div>What turns the text into tokens, and is it the same for every model?</div></details><details class="solution"><summary>Show answer</summary><div><p><b>The new model has a different tokenizer.</b> The same text can become more tokens. Anthropic, for example, says its tokenizer from Claude Opus 4.7 onwards makes about 30% more tokens from the same text than the one before. Same price per token, more tokens, bigger bill. Token counts belong to a model, not to a text, so recount when you switch.</p></div></details><div class="lc-meta"><label class="solved"><input type="checkbox" data-slug="tok-new-tokenizer"> I got it</label><span class="print-only">&#9744; got it &middot; answer at the end</span></div></div>
 
 <aside class="atwork"><h3>Use it at work</h3><ul>
-  <li>Estimate the token size of the files your agent reads in every session: the context file (such as <code>CLAUDE.md</code> or <code>AGENTS.md</code>), the main service files, a typical log. Characters ÷ 4 is a quick guess for prose; use a token counter for code and logs.</li>
+  <li>Estimate the token size of the files your agent reads in every session: the context file (such as <code>CLAUDE.md</code> or <span class="glue"><code>AGENTS.md</code>),</span> the main service files, a typical log. Characters ÷ 4 is a quick guess for prose; use a token counter for code and logs.</li>
   <li>In your coding agent, look at what fills the window. In Claude Code, <code>/context</code> shows what is using the window. The biggest users are usually tool results: long test output, whole-file reads and raw logs.</li>
   <li>Cut those before they reach the agent: filter logs to the error lines, run tests so they print failures only, and ask for edits, not whole files.</li>
 </ul>

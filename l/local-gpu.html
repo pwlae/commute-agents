@@ -33,7 +33,8 @@ h3{font-size:1.15rem;margin:1.75rem 0 .5rem}
 p,ul,ol{margin:.6rem 0}
 li{margin:.2rem 0}
 code{font:.88em/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--soft);padding:.1em .3em;border-radius:3px}
-:not(pre)>code{display:inline-block;max-width:100%;overflow-wrap:break-word}
+:not(pre)>code,.glue{display:inline-block;max-width:100%;overflow-wrap:break-word}
+.glue>code{display:inline}
 pre.code{background:var(--soft);border-left:3px solid var(--line);padding:.75rem;overflow-x:auto;margin:.75rem 0;border-radius:3px}
 pre.code code{background:none;padding:0;font-size:14px}
 .lead{font-size:1.1rem}
@@ -227,7 +228,7 @@ th,td{border:1px solid var(--line);padding:.35rem .6rem;text-align:left}
 <div class="lc pc" id="q-gpu-five-devs"><p class="pc-label">Question 5 &middot; <span class="mins">~3 min</span></p><div class="pc-q"><p>Stretch: Qwen3-Coder-30B-A3B at 4-bit (~19 GB) fits on your 24 GB card, so you offer it to five colleagues, each running an agent with 60,000 tokens of context. The model has 48 layers, 4 KV heads and head size 128. Does it work?</p></div><details class="hint"><summary>Hint</summary><div>Which part is shared between users, and which isn't?</div></details><details class="solution"><summary>Show answer</summary><div><p><b>No.</b> The weights are shared; the KV cache is per request. Per token: 48 × 4 × 128 × 2 × 2 = 98,304 bytes, so 60,000 tokens is about 5.9 GB per colleague, about 29.5 GB for five. Only about 5 GB is free after the weights, less than even one such context needs. Budget KV cache per user, at the context length agents really reach.</p></div></details><div class="lc-meta"><label class="solved"><input type="checkbox" data-slug="gpu-five-devs"> I got it</label><span class="print-only">&#9744; got it &middot; answer at the end</span></div></div>
 
 <aside class="atwork"><h3>Use it at work</h3><ul>
-  <li>Before anyone proposes self-hosting a model, do the three sums: weights at the chosen precision; KV cache per token (layers, KV heads and head size from the model's <code>config.json</code>) × the context your agents really use × the number of people at once; and bandwidth ÷ bytes per token for speed.</li>
+  <li>Before anyone proposes self-hosting a model, do the three sums: weights at the chosen precision; KV cache per token (layers, KV heads and head size from the model's <span class="glue"><code>config.json</code>)</span> × the context your agents really use × the number of people at once; and bandwidth ÷ bytes per token for speed.</li>
   <li>Check your agent's real context size in a typical session, and plan for that, not for a 2,000-token chat.</li>
   <li>To try a model locally, start with a 4-bit file of an MoE model that fits, and compare it with your main model on a few real tasks before relying on it.</li>
 </ul>

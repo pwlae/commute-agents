@@ -82,6 +82,21 @@ def expand_code(text):
     )
 
 
+# Inline code is an inline-block, so it only breaks at a hyphen when it is
+# longer than the line. But a browser may break the line between that box
+# and the text touching it, so a line could start with ", and". Put inline
+# code and the characters touching it ("(", ",", ").", "'s") in one box.
+INLINE_CODE = re.compile(r'([^\s>]*)(<code>(?:(?!</code>).)*?</code>)([^\s<]*)', re.S)
+
+
+def glue_inline_code(text):
+    def glue(m):
+        if not (m.group(1) or m.group(3)):
+            return m.group(0)
+        return f'<span class="glue">{m.group(0)}</span>'
+    return INLINE_CODE.sub(glue, text)
+
+
 # ---------- diagrams ----------
 
 def mermaid_config_hash():
@@ -375,6 +390,8 @@ def build():
             body, answers = expand_predict(body, l["id"], problems)
             body = expand_code(body)
             answers = expand_code(answers)
+            body = glue_inline_code(body)
+            answers = glue_inline_code(answers)
             body = expand_facts(body)
             body = expand_atwork(body)
             body = expand_recap(body)
